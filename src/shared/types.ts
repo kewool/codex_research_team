@@ -1,0 +1,162 @@
+export type SessionChannel = string;
+export type AgentRole = "research" | "implementation" | "review" | "general";
+export type AgentStatus = "starting" | "ready" | "running" | "waiting-input" | "idle" | "error" | "stopped";
+export type SessionStatus = "starting" | "running" | "idle" | "stopping" | "stopped" | "error";
+export type AgentHistoryKind = "notes" | "messages" | "prompts" | "stdout" | "stderr" | "errors";
+
+export interface TokenUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+}
+
+export interface AgentPreset {
+  id: string;
+  name: string;
+  role: AgentRole;
+  brief: string;
+  publishChannel: SessionChannel;
+  listenChannels: SessionChannel[];
+  maxTurns: number;
+  model: string | null;
+}
+
+export interface WorkspacePreset {
+  name: string;
+  path: string;
+}
+
+export interface AppDefaults {
+  language: string;
+  defaultWorkspaceName: string | null;
+  historyTail: number;
+  serverHost: string;
+  serverPort: number;
+  runsDir: string;
+  workspacesDir: string;
+  codexCommand: string;
+  model: string | null;
+  modelOptions: string[];
+  goalChannel: SessionChannel;
+  researchChannel: SessionChannel;
+  implementationChannel: SessionChannel;
+  reviewChannel: SessionChannel;
+  operatorChannel: SessionChannel;
+  extraChannels: SessionChannel[];
+  sandbox: "read-only" | "workspace-write" | "danger-full-access";
+  approvalPolicy: "untrusted" | "on-request" | "on-failure" | "never";
+  autoOpenBrowser: boolean;
+  search: boolean;
+  dangerousBypass: boolean;
+}
+
+export interface AppConfig {
+  defaults: AppDefaults;
+  workspaces: WorkspacePreset[];
+  agents: AgentPreset[];
+}
+
+export interface SessionEvent {
+  sequence: number;
+  timestamp: string;
+  sender: string;
+  channel: SessionChannel;
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentHistoryEntry {
+  id: string;
+  timestamp: string;
+  kind: AgentHistoryKind;
+  text: string;
+  label?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentTurnResult {
+  shouldReply: boolean;
+  workingNotes: string[];
+  teamMessage: string;
+  targetAgentId?: string | null;
+  targetAgentIds?: string[] | null;
+  completion: "continue" | "done" | "blocked";
+  rawText: string;
+}
+
+export interface AgentSnapshot {
+  id: string;
+  name: string;
+  brief: string;
+  publishChannel: SessionChannel;
+  model: string | null;
+  status: AgentStatus;
+  turnCount: number;
+  lastConsumedSequence: number;
+  pendingSignals: number;
+  waitingForInput: boolean;
+  lastPrompt: string;
+  lastInput: string;
+  lastError: string;
+  lastResponseAt: string | null;
+  completion: "continue" | "done" | "blocked";
+  workingNotes: string[];
+  teamMessage: string;
+  stdoutTail: string;
+  stderrTail: string;
+  lastUsage: TokenUsage;
+  totalUsage: TokenUsage;
+}
+
+export interface SessionSnapshot {
+  id: string;
+  title: string;
+  goal: string;
+  workspaceName: string;
+  workspacePath: string;
+  createdAt: string;
+  updatedAt: string;
+  status: SessionStatus;
+  eventCount: number;
+  agentCount: number;
+  selectedAgentId: string | null;
+  agents: AgentSnapshot[];
+  recentEvents: SessionEvent[];
+  totalUsage: TokenUsage;
+}
+
+export interface HistoryPage<T> {
+  items: T[];
+  nextBefore: string | number | null;
+  hasMore: boolean;
+}
+
+export interface ModelCatalog {
+  models: string[];
+  source: string;
+  fetchedAt: string | null;
+}
+
+export interface RootSnapshot {
+  config: AppConfig;
+  sessions: SessionSnapshot[];
+  modelCatalog: ModelCatalog;
+}
+
+export interface StartSessionRequest {
+  goal: string;
+  workspaceName?: string;
+  workspacePath?: string;
+  title?: string;
+}
+
+export interface SendAgentInputRequest {
+  agentId: string;
+  text: string;
+}
+
+export interface SendSessionInstructionRequest {
+  text: string;
+  targetAgentId?: string | null;
+  channel: "goal" | "operator";
+}

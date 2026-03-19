@@ -1,0 +1,22 @@
+{
+  "name": "codex-group",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Long-lived multi-agent Codex orchestration with a browser UI.",
+  "type": "commonjs",
+  "scripts": {
+    "build": "node scripts/run-tsc.mjs",
+    "serve": "node dist/cli.js serve",
+    "settings": "node dist/cli.js settings",
+    "workspace": "node dist/cli.js workspace",
+    "start": "node dist/cli.js serve",
+    "check": "node scripts/run-tsc.mjs --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "yarn@1.22.22",
+  "dependencies": {
+    "node-pty": "^1.1.0"
+  }
+}
