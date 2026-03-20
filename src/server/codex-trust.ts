@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-function codexConfigPath(): string {
-  return join(homedir(), ".codex", "config.toml");
+function codexConfigPath(codexHomeDir?: string | null): string {
+  return join(codexHomeDir || join(homedir(), ".codex"), "config.toml");
 }
 
 function literalProjectHeader(targetPath: string): string {
@@ -19,9 +19,9 @@ function isSectionHeader(line: string): boolean {
   return /^\[[^\]]+\]\s*$/.test(line.trim());
 }
 
-export function ensureCodexWorkspaceTrust(targetPath: string): void {
+export function ensureCodexWorkspaceTrust(targetPath: string, codexHomeDir?: string | null): void {
   const resolvedPath = resolve(targetPath);
-  const configPath = codexConfigPath();
+  const configPath = codexConfigPath(codexHomeDir);
   mkdirSync(dirname(configPath), { recursive: true });
 
   const raw = existsSync(configPath) ? readFileSync(configPath, "utf8").replace(/^\ufeff/, "") : "";

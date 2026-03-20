@@ -2,12 +2,13 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { AppConfig, RootSnapshot, StartSessionRequest } from "../shared/types";
-import { defaultListenChannels, defaultPublishChannel, inferAgentRole, loadConfig, normalizeDefaults, saveConfig } from "./config";
+import { defaultListenChannels, defaultPublishChannel, emptyAgentPolicy, loadConfig, normalizeAgentPolicy, normalizeDefaults, saveConfig } from "./config";
 import { loadSavedSession, loadSavedSessions, openSessionFiles, resolveSessionRoot } from "./storage";
 import { slugify } from "./utils";
 import { LiveSession } from "./session";
-import { loadCodexModelCatalog } from "./model-catalog";
+import { loadCodexMcpCatalog, loadCodexModelCatalog } from "./model-catalog";
 import { ensureCodexWorkspaceTrust } from "./codex-trust";
+import { effectiveCodexHomeDir, syncProjectCodexHome } from "./codex-home";
 
 function normalizeModelList(values: unknown[], current?: string | null): string[] {
   const deduped = new Set<string>();
@@ -32,15 +33,18 @@ export class SessionManager {
   constructor(configPath: string) {
     this.configPath = configPath;
     this.config = loadConfig(configPath);
+    syncProjectCodexHome(this.config);
   }
 
   snapshot(): RootSnapshot {
     const active = [...this.activeSessions.values()].map((session) => session.snapshot());
     const saved = loadSavedSessions(this.config).filter((savedSession) => Boolean(savedSession && savedSession.id) && !this.activeSessions.has(savedSession.id));
+    const preferredHome = effectiveCodexHomeDir(this.config);
     return {
       config: this.config,
       sessions: [...active, ...saved].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))),
-      modelCatalog: loadCodexModelCatalog(),
+      modelCatalog: loadCodexModelCatalog(preferredHome),
+      mcpCatalog: loadCodexMcpCatalog(preferredHome),
     };
   }
 
@@ -50,7 +54,8 @@ export class SessionManager {
       throw new Error("Goal is required.");
     }
     const workspace = this.resolveWorkspace(request.workspaceName, request.workspacePath);
-    ensureCodexWorkspaceTrust(workspace.path);
+    const codexHomeDir = syncProjectCodexHome(this.config);
+    ensureCodexWorkspaceTrust(workspace.path, codexHomeDir);
     const title = (request.title?.trim() || goal).slice(0, 80);
     const session = new LiveSession({
       config: this.config,
@@ -73,7 +78,8 @@ export class SessionManager {
     if (!snapshot) {
       throw new Error(`Unknown session: ${id}`);
     }
-    ensureCodexWorkspaceTrust(snapshot.workspacePath);
+    const codexHomeDir = syncProjectCodexHome(this.config);
+    ensureCodexWorkspaceTrust(snapshot.workspacePath, codexHomeDir);
     mkdirSync(snapshot.workspacePath, { recursive: true });
     const session = new LiveSession({
       config: this.config,
@@ -117,6 +123,9 @@ export class SessionManager {
     }
 
     const mergedDefaults = normalizeDefaults(next.defaults, this.config.defaults);
+    if (mergedDefaults.codexHomeMode === "project") {
+      mergedDefaults.codexHomeDir = resolve(mergedDefaults.codexHomeDir);
+    }
     mergedDefaults.model = String(mergedDefaults.model ?? "").trim() || null;
     mergedDefaults.modelOptions = normalizeModelList(Array.isArray(mergedDefaults.modelOptions) ? mergedDefaults.modelOptions : [], mergedDefaults.model);
 
@@ -126,19 +135,18 @@ export class SessionManager {
           if (model) {
             mergedDefaults.modelOptions = normalizeModelList(mergedDefaults.modelOptions, model);
           }
-          const role = inferAgentRole(agent, mergedDefaults);
-          const publishChannel = String(agent.publishChannel ?? defaultPublishChannel(role, mergedDefaults)).trim() || defaultPublishChannel(role, mergedDefaults);
+          const publishChannel = String(agent.publishChannel ?? defaultPublishChannel(mergedDefaults)).trim() || defaultPublishChannel(mergedDefaults);
           const rawChannels = Array.isArray(agent.listenChannels) ? agent.listenChannels.map((value) => String(value ?? "").trim()).filter(Boolean) : [];
-          const listenChannels = rawChannels.length > 0 ? [...new Set(rawChannels)] : defaultListenChannels(role, mergedDefaults);
+          const listenChannels = rawChannels.length > 0 ? [...new Set(rawChannels)] : defaultListenChannels(mergedDefaults);
           return {
             id: String(agent.id ?? `agent_${index + 1}`).trim() || `agent_${index + 1}`,
             name: String(agent.name ?? `agent_${index + 1}`).trim() || `agent_${index + 1}`,
-            role,
-            brief: String(agent.brief ?? "Research independently and share novel findings.").trim() || "Research independently and share novel findings.",
+            brief: String(agent.brief ?? "Explore independently and share novel findings.").trim() || "Explore independently and share novel findings.",
             publishChannel,
             listenChannels,
             maxTurns: Number(agent.maxTurns ?? 0) || 0,
             model,
+            policy: normalizeAgentPolicy(agent.policy ?? emptyAgentPolicy()),
           };
         })
       : this.config.agents;
@@ -148,6 +156,11 @@ export class SessionManager {
       workspaces,
       agents,
     };
+
+    if (this.config.defaults.codexHomeMode === "project") {
+      mkdirSync(resolve(this.config.defaults.codexHomeDir), { recursive: true });
+      syncProjectCodexHome(this.config);
+    }
 
     if (!this.config.defaults.defaultWorkspaceName || !workspaces.some((workspace) => workspace.name === this.config.defaults.defaultWorkspaceName)) {
       this.config.defaults.defaultWorkspaceName = workspaces[0]?.name ?? null;

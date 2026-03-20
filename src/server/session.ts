@@ -29,9 +29,7 @@ interface PendingDigest {
   latestGoal: SessionEvent | null;
   operatorEvents: SessionEvent[];
   directInputs: SessionEvent[];
-  researchEvents: SessionEvent[];
-  implementationEvents: SessionEvent[];
-  reviewEvents: SessionEvent[];
+  channelEvents: Record<string, SessionEvent[]>;
   otherEvents: SessionEvent[];
 }
 
@@ -109,9 +107,7 @@ function emptyPendingDigest(): PendingDigest {
     latestGoal: null,
     operatorEvents: [],
     directInputs: [],
-    researchEvents: [],
-    implementationEvents: [],
-    reviewEvents: [],
+    channelEvents: {},
     otherEvents: [],
   };
 }
@@ -120,9 +116,8 @@ function hasPendingDigest(digest: PendingDigest): boolean {
   return digest.totalCount > 0;
 }
 
-function mergePendingDigest(digest: PendingDigest, event: SessionEvent, config: AppConfig): PendingDigest {
-  const agentRole = String(event.metadata?.agentRole ?? "").trim();
-  if (event.channel === config.defaults.goalChannel) {
+function mergePendingDigest(digest: PendingDigest, event: SessionEvent): PendingDigest {
+  if (event.metadata?.goalEvent) {
     return {
       ...emptyPendingDigest(),
       totalCount: 1,
@@ -135,13 +130,13 @@ function mergePendingDigest(digest: PendingDigest, event: SessionEvent, config: 
     latestGoal: digest.latestGoal,
     operatorEvents: [...digest.operatorEvents],
     directInputs: [...digest.directInputs],
-    researchEvents: [...digest.researchEvents],
-    implementationEvents: [...digest.implementationEvents],
-    reviewEvents: [...digest.reviewEvents],
+    channelEvents: Object.fromEntries(
+      Object.entries(digest.channelEvents).map(([channel, events]) => [channel, [...events]]),
+    ),
     otherEvents: [...digest.otherEvents],
   };
 
-  if (event.channel === config.defaults.operatorChannel) {
+  if (event.metadata?.operatorEvent) {
     if (event.metadata?.directInput) {
       next.directInputs = [...next.directInputs, event];
     } else {
@@ -150,25 +145,12 @@ function mergePendingDigest(digest: PendingDigest, event: SessionEvent, config: 
     return next;
   }
 
-  if (event.channel === config.defaults.researchChannel || agentRole === "research") {
-    next.researchEvents = [...next.researchEvents, event];
-    return next;
-  }
-
-  if (event.channel === config.defaults.implementationChannel || agentRole === "implementation") {
-    next.implementationEvents = [...next.implementationEvents, event];
-    return next;
-  }
-
-  if (event.channel === config.defaults.reviewChannel || agentRole === "review") {
-    next.reviewEvents = [...next.reviewEvents, event];
-    return next;
-  }
-
   if (event.channel !== "status" && event.channel !== "system") {
-    next.otherEvents = [...next.otherEvents, event];
+    next.channelEvents[event.channel] = [...(next.channelEvents[event.channel] || []), event];
+    return next;
   }
 
+  next.otherEvents = [...next.otherEvents, event];
   return next;
 }
 
@@ -192,17 +174,11 @@ function buildTriggerSummary(digest: PendingDigest): string {
   if (operatorSection) {
     sections.push(operatorSection);
   }
-  const researchSection = buildDigestSection("Research digest", digest.researchEvents);
-  if (researchSection) {
-    sections.push(researchSection);
-  }
-  const implementationSection = buildDigestSection("Implementation digest", digest.implementationEvents);
-  if (implementationSection) {
-    sections.push(implementationSection);
-  }
-  const reviewSection = buildDigestSection("Review digest", digest.reviewEvents);
-  if (reviewSection) {
-    sections.push(reviewSection);
+  for (const [channel, events] of Object.entries(digest.channelEvents)) {
+    const channelSection = buildDigestSection(`Channel digest: ${channel}`, events);
+    if (channelSection) {
+      sections.push(channelSection);
+    }
   }
   const otherSection = buildDigestSection("Additional channel updates", digest.otherEvents);
   if (otherSection) {
@@ -227,14 +203,10 @@ function digestSequences(digest: PendingDigest): Set<number> {
   for (const event of digest.directInputs) {
     push(event);
   }
-  for (const event of digest.researchEvents) {
-    push(event);
-  }
-  for (const event of digest.implementationEvents) {
-    push(event);
-  }
-  for (const event of digest.reviewEvents) {
-    push(event);
+  for (const events of Object.values(digest.channelEvents)) {
+    for (const event of events) {
+      push(event);
+    }
   }
   for (const event of digest.otherEvents) {
     push(event);
@@ -328,40 +300,16 @@ export class LiveSession {
     return this.config.defaults.goalChannel;
   }
 
-  private researchChannel(): SessionChannel {
-    return this.config.defaults.researchChannel;
-  }
-
-  private implementationChannel(): SessionChannel {
-    return this.config.defaults.implementationChannel;
-  }
-
-  private reviewChannel(): SessionChannel {
-    return this.config.defaults.reviewChannel;
-  }
-
   private operatorChannel(): SessionChannel {
     return this.config.defaults.operatorChannel;
   }
 
-  private isRole(agent: RuntimeAgent, role: "research" | "implementation" | "review" | "general"): boolean {
-    return agent.preset.role === role;
+  private isGoalEvent(event: SessionEvent): boolean {
+    return Boolean(event.metadata?.goalEvent);
   }
 
-  private eventRole(event: SessionEvent): string {
-    return String(event.metadata?.agentRole ?? "").trim();
-  }
-
-  private isResearchEvent(event: SessionEvent): boolean {
-    return event.channel === this.researchChannel() || this.eventRole(event) === "research";
-  }
-
-  private isImplementationEvent(event: SessionEvent): boolean {
-    return event.channel === this.implementationChannel() || this.eventRole(event) === "implementation";
-  }
-
-  private isReviewEvent(event: SessionEvent): boolean {
-    return event.channel === this.reviewChannel() || this.eventRole(event) === "review";
+  private isOperatorEvent(event: SessionEvent): boolean {
+    return Boolean(event.metadata?.operatorEvent);
   }
 
   async start(): Promise<void> {
@@ -386,7 +334,7 @@ export class LiveSession {
     this.emit({ type: "session", sessionId: this.id, snapshot: this.snapshot() });
     if (mode === "new") {
       this.publish("system", "status", `Session started in ${this.workspacePath}`);
-      this.publish("user", this.goalChannel(), this.goal);
+      this.publish("user", this.goalChannel(), this.goal, { goalEvent: true });
     } else {
       this.publish("system", "status", `Session resumed in ${this.workspacePath}`);
       for (const runtime of this.agents.values()) {
@@ -397,7 +345,7 @@ export class LiveSession {
           "operator",
           this.operatorChannel(),
           `Resume note: your previous work was interrupted before it finished. Continue from completed turn ${runtime.snapshot.turnCount} and treat this as a resumed turn, not a fresh restart.`,
-          { targetAgentId: runtime.preset.id },
+          { targetAgentId: runtime.preset.id, operatorEvent: true },
         );
       }
     }
@@ -530,7 +478,7 @@ export class LiveSession {
       agent.snapshot.completion = "continue";
     }
     this.status = "running";
-    this.publish("user", this.goalChannel(), this.goal);
+    this.publish("user", this.goalChannel(), this.goal, { goalEvent: true });
   }
 
   async sendOperatorInstruction(text: string, targetAgentId?: string | null): Promise<void> {
@@ -538,7 +486,10 @@ export class LiveSession {
     if (!trimmed) {
       return;
     }
-    this.publish("operator", this.operatorChannel(), trimmed, targetAgentId ? { targetAgentId } : undefined);
+    this.publish("operator", this.operatorChannel(), trimmed, {
+      ...(targetAgentId ? { targetAgentId } : {}),
+      operatorEvent: true,
+    });
   }
 
   async sendHumanInput(agentId: string, text: string): Promise<void> {
@@ -551,7 +502,7 @@ export class LiveSession {
       return;
     }
     this.updateAgentSnapshot(agentId, { lastInput: trimmed, waitingForInput: false });
-    this.publish("operator", this.operatorChannel(), trimmed, { targetAgentId: agentId, directInput: true });
+    this.publish("operator", this.operatorChannel(), trimmed, { targetAgentId: agentId, directInput: true, operatorEvent: true });
   }
 
   async stop(): Promise<void> {
@@ -594,13 +545,18 @@ export class LiveSession {
       return false;
     }
     const targetIds = extractTargetAgentIds(event.metadata);
-    if (targetIds.length > 0 && !targetIds.includes(agent.preset.id)) {
+    if (!this.isGoalEvent(event) && !this.isOperatorEvent(event) && targetIds.length === 0 && agent.preset.policy.targetedOnlyChannels.includes(event.channel)) {
       return false;
+    }
+    if (targetIds.length > 0 && !targetIds.includes(agent.preset.id)) {
+      if (!agent.preset.policy.observeTargetedChannels.includes(event.channel)) {
+        return false;
+      }
     }
     if (this.shouldIgnoreCompletedAgent(agent, event)) {
       return false;
     }
-    if (this.shouldMuteResearchFollowup(agent, event)) {
+    if (this.shouldMuteFollowup(agent, event)) {
       return false;
     }
     return true;
@@ -611,7 +567,7 @@ export class LiveSession {
       if (!this.shouldRouteEventToAgent(agent, event)) {
         continue;
       }
-      agent.pendingDigest = mergePendingDigest(agent.pendingDigest, event, this.config);
+      agent.pendingDigest = mergePendingDigest(agent.pendingDigest, event);
       agent.snapshot.pendingSignals = agent.pendingDigest.totalCount;
       this.persistAgent(agent.preset.id);
       this.scheduleAgentDrain(agent.preset.id);
@@ -631,7 +587,7 @@ export class LiveSession {
         if (!this.shouldRouteEventToAgent(agent, event)) {
           continue;
         }
-        agent.pendingDigest = mergePendingDigest(agent.pendingDigest, event, this.config);
+        agent.pendingDigest = mergePendingDigest(agent.pendingDigest, event);
       }
       agent.snapshot.pendingSignals = agent.pendingDigest.totalCount;
       this.persistAgent(agent.preset.id);
@@ -742,11 +698,19 @@ export class LiveSession {
         .map((value) => String(value ?? "").trim())
         .filter((value) => value && value !== agentId && this.agents.has(value)),
     )];
-    const effectiveTargetAgentIds = this.shouldForceBroadcastResearch(agent) ? [] : normalizedTargetAgentIds;
+    const allowedTargetSet = new Set(
+      (Array.isArray(agent.preset.policy.allowedTargetAgentIds) ? agent.preset.policy.allowedTargetAgentIds : [])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean),
+    );
+    const restrictedTargetAgentIds = allowedTargetSet.size > 0
+      ? normalizedTargetAgentIds.filter((value) => allowedTargetSet.has(value))
+      : normalizedTargetAgentIds;
+    const peerDeferredTargetAgentIds = this.applyPeerContextTargetDeferral(agent, restrictedTargetAgentIds);
+    const effectiveTargetAgentIds = this.shouldForceBroadcastOnFirstTurn(agent) ? [] : peerDeferredTargetAgentIds;
 
     const eventMetadata = {
       agentId,
-      agentRole: agent.preset.role,
       turnCount: agent.snapshot.turnCount,
       shouldReply: result.shouldReply,
       completion: result.completion,
@@ -829,35 +793,54 @@ export class LiveSession {
 
   private latestGoalSequence(): number {
     for (let index = this.recentEvents.length - 1; index >= 0; index -= 1) {
-      if (this.recentEvents[index].channel === this.goalChannel()) {
+      if (this.isGoalEvent(this.recentEvents[index])) {
         return this.recentEvents[index].sequence;
       }
     }
     return 0;
   }
 
-  private requiredResearchSources(): number {
-    const researchAgentCount = [...this.agents.values()].filter((agent) => this.isRole(agent, "research")).length;
-    return Math.max(1, Math.min(2, researchAgentCount));
-  }
-
-  private hasEnoughResearchContext(): boolean {
+  private eventsSinceGoalForChannels(channels: SessionChannel[]): SessionEvent[] {
+    const normalizedChannels = [...new Set(channels.map((channel) => String(channel ?? "").trim()).filter(Boolean))];
+    if (normalizedChannels.length === 0) {
+      return [];
+    }
     const latestGoalSequence = this.latestGoalSequence();
-    const researchEvents = this.recentEvents.filter(
-      (event) => this.isResearchEvent(event) && event.sequence > latestGoalSequence && event.sender !== "system",
+    return this.recentEvents.filter(
+      (event) =>
+        event.sequence > latestGoalSequence &&
+        event.sender !== "system" &&
+        normalizedChannels.includes(event.channel),
     );
-    const senders = new Set(researchEvents.map((event) => event.sender));
-    return senders.size >= this.requiredResearchSources() && researchEvents.length >= 3;
   }
 
-  private hasImplementationContext(): boolean {
+  private hasChannelActivitySinceGoal(channels: SessionChannel[]): boolean {
+    return this.eventsSinceGoalForChannels(channels).length > 0;
+  }
+
+  private meetsActivationPolicy(agent: RuntimeAgent): boolean {
+    const policy = agent.preset.policy;
+    if (!policy || policy.activationChannels.length === 0) {
+      return true;
+    }
+    const relevantEvents = this.eventsSinceGoalForChannels(policy.activationChannels);
+    const enoughEvents = relevantEvents.length >= Math.max(0, Number(policy.activationMinEvents || 0));
+    const enoughSenders = new Set(relevantEvents.map((event) => event.sender)).size >= Math.max(0, Number(policy.activationMinUniqueSenders || 0));
+    return enoughEvents && enoughSenders;
+  }
+
+  private hasPeerContext(agent: RuntimeAgent): boolean {
+    const channels = Array.isArray(agent.preset.policy.peerContextChannels) ? agent.preset.policy.peerContextChannels : [];
+    if (channels.length === 0) {
+      return true;
+    }
     const latestGoalSequence = this.latestGoalSequence();
     return this.recentEvents.some(
       (event) =>
-        this.isImplementationEvent(event) &&
         event.sequence > latestGoalSequence &&
         event.sender !== "system" &&
-        compactWhitespace(event.content).length > 0,
+        event.sender !== agent.preset.name &&
+        channels.includes(event.channel),
     );
   }
 
@@ -869,16 +852,10 @@ export class LiveSession {
     if (targetIds.includes(agent.preset.id)) {
       return false;
     }
-    if (event.channel === this.goalChannel() || event.channel === this.operatorChannel()) {
+    if (this.isGoalEvent(event) || this.isOperatorEvent(event)) {
       return false;
     }
-    if (this.isRole(agent, "implementation")) {
-      return !this.isReviewEvent(event);
-    }
-    if (this.isRole(agent, "review")) {
-      return !this.isImplementationEvent(event);
-    }
-    return true;
+    return !agent.preset.policy.doneReopenChannels.includes(event.channel);
   }
 
   private wasInterruptedSnapshot(snapshot: AgentSnapshot): boolean {
@@ -895,79 +872,90 @@ export class LiveSession {
     return compactWhitespace(notes).toLowerCase().includes("stopped");
   }
 
-  private researchReplyCountSinceGoal(agentName: string): number {
+  private agentReplyCountSinceGoal(agent: RuntimeAgent): number {
     const latestGoalSequence = this.latestGoalSequence();
     return this.recentEvents.filter(
-      (event) => event.sender === agentName && this.isResearchEvent(event) && event.sequence > latestGoalSequence,
+      (event) =>
+        event.sender === agent.preset.name &&
+        event.channel === agent.preset.publishChannel &&
+        event.sequence > latestGoalSequence,
     ).length;
   }
 
-  private shouldMuteResearchFollowup(agent: RuntimeAgent, event: SessionEvent): boolean {
-    if (!this.isRole(agent, "research")) {
+  private shouldMuteFollowup(agent: RuntimeAgent, event: SessionEvent): boolean {
+    const policy = agent.preset.policy;
+    if (!policy.muteFollowupChannels.includes(event.channel)) {
       return false;
     }
-    if (!this.isResearchEvent(event)) {
-      return false;
-    }
-    if (this.hasImplementationContext()) {
+    if (this.hasChannelActivitySinceGoal(policy.muteOnChannelActivity)) {
       return true;
     }
-    return this.researchReplyCountSinceGoal(agent.preset.name) >= 1;
+    return this.agentReplyCountSinceGoal(agent) >= 1;
+  }
+
+  private currentTurnHasTargetedRequest(agent: RuntimeAgent): boolean {
+    const digest = agent.inFlightDigest;
+    if (!digest) {
+      return false;
+    }
+    const events = [
+      ...(digest.latestGoal ? [digest.latestGoal] : []),
+      ...digest.operatorEvents,
+      ...digest.directInputs,
+      ...Object.values(digest.channelEvents).flat(),
+      ...digest.otherEvents,
+    ];
+    return events.some((event) => extractTargetAgentIds(event.metadata).includes(agent.preset.id));
   }
 
   private hasOperatorOverride(agent: RuntimeAgent): boolean {
-    return agent.pendingDigest.operatorEvents.length > 0 || agent.pendingDigest.directInputs.length > 0;
+    return (
+      agent.pendingDigest.operatorEvents.length > 0 ||
+      agent.pendingDigest.directInputs.length > 0 ||
+      Boolean(agent.inFlightDigest && (agent.inFlightDigest.operatorEvents.length > 0 || agent.inFlightDigest.directInputs.length > 0))
+    );
   }
 
-  private shouldForceBroadcastResearch(agent: RuntimeAgent): boolean {
-    if (!this.isRole(agent, "research")) {
+  private applyPeerContextTargetDeferral(agent: RuntimeAgent, targetAgentIds: string[]): string[] {
+    const deferredTargets = new Set(
+      (Array.isArray(agent.preset.policy.deferTargetAgentIdsUntilPeerContext) ? agent.preset.policy.deferTargetAgentIdsUntilPeerContext : [])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean),
+    );
+    if (deferredTargets.size === 0) {
+      return targetAgentIds;
+    }
+    if (this.hasPeerContext(agent) || this.currentTurnHasTargetedRequest(agent) || this.hasOperatorOverride(agent)) {
+      return targetAgentIds;
+    }
+    return targetAgentIds.filter((value) => !deferredTargets.has(value));
+  }
+
+  private shouldForceBroadcastOnFirstTurn(agent: RuntimeAgent): boolean {
+    if (!agent.preset.policy.forceBroadcastOnFirstTurn) {
       return false;
     }
     if (this.hasOperatorOverride(agent)) {
-      return false;
-    }
-    if (this.hasImplementationContext()) {
       return false;
     }
     return agent.snapshot.turnCount === 0;
   }
 
   private shouldDeferAgent(agent: RuntimeAgent): boolean {
-    if (this.isRole(agent, "implementation")) {
-      return !this.hasOperatorOverride(agent) && !this.hasEnoughResearchContext();
-    }
-    if (this.isRole(agent, "review")) {
-      return !this.hasOperatorOverride(agent) && !this.hasImplementationContext();
-    }
-    return false;
+    return !this.hasOperatorOverride(agent) && !this.meetsActivationPolicy(agent);
   }
 
   private transcriptEventLimit(agent: RuntimeAgent): number {
     const configured = Math.max(1, Number(this.config.defaults.historyTail || 0) || 1);
-    if (this.isRole(agent, "implementation") || this.isRole(agent, "review")) {
-      return Math.min(configured, 6);
-    }
-    return Math.min(configured, 5);
+    return Math.min(configured, 6);
   }
 
   private transcriptCharLimit(agent: RuntimeAgent): number {
-    if (this.isRole(agent, "implementation") || this.isRole(agent, "review")) {
-      return 180;
-    }
-    return 150;
+    return 170;
   }
 
   private transcriptChannels(agent: RuntimeAgent): Set<SessionChannel> {
-    if (this.isRole(agent, "implementation")) {
-      return new Set<SessionChannel>([this.goalChannel(), this.operatorChannel(), this.researchChannel(), this.reviewChannel(), ...agent.preset.listenChannels]);
-    }
-    if (this.isRole(agent, "review")) {
-      return new Set<SessionChannel>([this.goalChannel(), this.operatorChannel(), this.implementationChannel(), this.researchChannel(), ...agent.preset.listenChannels]);
-    }
-    if (this.hasImplementationContext()) {
-      return new Set<SessionChannel>([this.goalChannel(), this.operatorChannel(), this.implementationChannel(), ...agent.preset.listenChannels]);
-    }
-    return new Set<SessionChannel>([this.goalChannel(), this.operatorChannel(), this.researchChannel(), this.implementationChannel(), ...agent.preset.listenChannels]);
+    return new Set<SessionChannel>([this.goalChannel(), this.operatorChannel(), ...agent.preset.listenChannels]);
   }
 
   private buildTranscript(agent: RuntimeAgent, digest: PendingDigest): string {
@@ -977,7 +965,7 @@ export class LiveSession {
     const events = this.recentEvents
       .filter((event) => {
         const targetIds = extractTargetAgentIds(event.metadata);
-        const isTargetedTeamMessage = event.channel !== this.operatorChannel() && targetIds.length > 0;
+        const isTargetedTeamMessage = !this.isOperatorEvent(event) && targetIds.length > 0;
         if (event.sender === agent.preset.name) {
           return false;
         }
@@ -987,7 +975,7 @@ export class LiveSession {
         if (!isTargetedTeamMessage && !allowedChannels.has(event.channel)) {
           return false;
         }
-        if (event.channel === this.operatorChannel() && targetIds.length > 0 && !targetIds.includes(agent.preset.id)) {
+        if (this.isOperatorEvent(event) && targetIds.length > 0 && !targetIds.includes(agent.preset.id)) {
           return false;
         }
         if (latestGoalSequence > 0 && event.sequence < latestGoalSequence) {

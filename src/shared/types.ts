@@ -1,5 +1,4 @@
 export type SessionChannel = string;
-export type AgentRole = "research" | "implementation" | "review" | "general";
 export type AgentStatus = "starting" | "ready" | "running" | "waiting-input" | "idle" | "error" | "stopped";
 export type SessionStatus = "starting" | "running" | "idle" | "stopping" | "stopped" | "error";
 export type AgentHistoryKind = "notes" | "messages" | "prompts" | "stdout" | "stderr" | "errors";
@@ -10,15 +9,31 @@ export interface TokenUsage {
   outputTokens: number;
 }
 
+export interface AgentPolicy {
+  promptGuidance: string[];
+  activationChannels: SessionChannel[];
+  activationMinEvents: number;
+  activationMinUniqueSenders: number;
+  peerContextChannels: SessionChannel[];
+  doneReopenChannels: SessionChannel[];
+  allowedTargetAgentIds: string[];
+  deferTargetAgentIdsUntilPeerContext: string[];
+  observeTargetedChannels: SessionChannel[];
+  targetedOnlyChannels: SessionChannel[];
+  muteFollowupChannels: SessionChannel[];
+  muteOnChannelActivity: SessionChannel[];
+  forceBroadcastOnFirstTurn: boolean;
+}
+
 export interface AgentPreset {
   id: string;
   name: string;
-  role: AgentRole;
   brief: string;
   publishChannel: SessionChannel;
   listenChannels: SessionChannel[];
   maxTurns: number;
   model: string | null;
+  policy: AgentPolicy;
 }
 
 export interface WorkspacePreset {
@@ -35,12 +50,13 @@ export interface AppDefaults {
   runsDir: string;
   workspacesDir: string;
   codexCommand: string;
+  codexHomeMode: "project" | "global";
+  codexHomeDir: string;
   model: string | null;
+  modelReasoningEffort: string | null;
   modelOptions: string[];
+  mcpServerNames: string[];
   goalChannel: SessionChannel;
-  researchChannel: SessionChannel;
-  implementationChannel: SessionChannel;
-  reviewChannel: SessionChannel;
   operatorChannel: SessionChannel;
   extraChannels: SessionChannel[];
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
@@ -137,10 +153,16 @@ export interface ModelCatalog {
   fetchedAt: string | null;
 }
 
+export interface McpCatalog {
+  servers: string[];
+  source: string;
+}
+
 export interface RootSnapshot {
   config: AppConfig;
   sessions: SessionSnapshot[];
   modelCatalog: ModelCatalog;
+  mcpCatalog: McpCatalog;
 }
 
 export interface StartSessionRequest {

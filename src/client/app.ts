@@ -203,6 +203,15 @@ function escapeHtml(value: unknown): string {
     .replaceAll('"', "&quot;");
 }
 
+function renderHint(text: string): string {
+  const tip = escapeHtml(text);
+  return `<span class="hint" tabindex="0" role="note" aria-label="${tip}" data-tip="${tip}">?</span>`;
+}
+
+function renderLabel(text: string, help?: string): string {
+  return `<span class="field-label">${escapeHtml(text)}${help ? renderHint(help) : ""}</span>`;
+}
+
 function setFlash(kind: "error" | "info", text: string): void {
   state.flash = { kind, text };
   paintFlash();
@@ -288,6 +297,33 @@ function modelCatalogSummary(): string {
   const source = sourceMap[String(catalog.source || "none")] || String(catalog.source || "unknown source");
   const fetchedAt = String(catalog.fetchedAt || "").trim();
   return fetchedAt ? `Auto-loaded from ${source}. Cache fetched at ${fetchedAt}.` : `Auto-loaded from ${source}.`;
+}
+
+function mcpOptions(): string[] {
+  const values = (state.snapshot?.mcpCatalog?.servers || [])
+    .map((value: unknown) => String(value ?? "").trim())
+    .filter((value: string) => Boolean(value));
+  return Array.from(new Set<string>(values));
+}
+
+function mcpCatalogSummary(): string {
+  const catalog = state.snapshot?.mcpCatalog;
+  if (!catalog) {
+    return "MCP catalog unavailable.";
+  }
+  if (!catalog.servers?.length) {
+    return "No MCP servers detected in the available Codex config sources.";
+  }
+  return `Selectable MCP servers discovered from ${String(catalog.source || "the active Codex config source")}.`;
+}
+
+function reasoningEffortOptions(config: AnyObject): string[] {
+  const values = new Set<string>(["minimal", "low", "medium", "high", "xhigh"]);
+  const selected = String(config?.defaults?.modelReasoningEffort || "").trim();
+  if (selected) {
+    values.add(selected);
+  }
+  return [...values];
 }
 
 function ensureTerminalRow(lines: string[], row: number): void {
@@ -571,12 +607,14 @@ function render(): void {
   const sessions = ((snapshot?.sessions as AnyObject[]) || []);
 
   root.innerHTML = `
-    <div class="app-shell">
+    <div class="app-shell route-${state.route.name}">
       <aside class="rail">
         <div class="rail-brand">
-          <p class="eyebrow">Codex Group</p>
-          <h1>Persistent Agent Room</h1>
-          <p>Create sessions, manage workspaces, and monitor agents from separated views.</p>
+          <div class="brand-mark" aria-hidden="true">ct</div>
+          <div class="brand-copy">
+            <p class="eyebrow">codex_team</p>
+            <h1>Control Room</h1>
+          </div>
         </div>
         <nav class="rail-nav">
           <button class="nav-item ${state.route.name === "dashboard" ? "active" : ""}" data-nav="/">Dashboard</button>
@@ -595,8 +633,8 @@ function render(): void {
       </aside>
       <main class="page">
         <header class="page-topbar">
-          <div>
-            <p class="eyebrow">Local Web UI</p>
+          <div class="page-heading">
+            <p class="eyebrow page-label">${escapeHtml(pageKicker())}</p>
             <h2>${escapeHtml(pageTitle())}</h2>
           </div>
           <div class="topbar-actions">
@@ -621,6 +659,19 @@ function render(): void {
     restoreRenderScrollSnapshot(scrollSnapshot);
     requestAnimationFrame(() => restoreRenderScrollSnapshot(scrollSnapshot));
   }
+}
+
+function pageKicker(): string {
+  if (state.route.name === "workspaces") {
+    return "Workspace library";
+  }
+  if (state.route.name === "settings") {
+    return "Runtime setup";
+  }
+  if (state.route.name === "session") {
+    return "Live session";
+  }
+  return "Overview";
 }
 
 function pageTitle(): string {
@@ -677,24 +728,29 @@ function renderDashboardPage(): string {
     .join("");
   const active = activeSessions();
   return `
-    <section class="hero panel hero-panel">
-      <div class="hero-copy">
-        <p class="eyebrow">Launch</p>
-        <h3>Start New Session</h3>
-        <p>This page is for creating sessions and browsing the list. Live monitoring happens on the session detail page.</p>
+    <section class="panel launch-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Start</p>
+          <h3>New Session</h3>
+        </div>
+        <div class="hero-meta">
+          <span>${escapeHtml(String(active.length))} active</span>
+          <span>${escapeHtml(String(sessions.length))} saved</span>
+        </div>
       </div>
       <div class="launch-form">
         <label>
-          <span>Goal</span>
+          ${renderLabel("Goal", "Top-level objective for the session. This is broadcast into the room when the session starts.")}
           <textarea id="launch-goal" placeholder="Example: analyze the sample audio in the workspace and plan an MR reconstruction workflow"></textarea>
         </label>
         <div class="launch-grid">
           <label>
-            <span>Title</span>
+            ${renderLabel("Title", "Optional display name for the room. If empty, the goal will be used.")}
             <input id="launch-title" placeholder="Optional" />
           </label>
           <label>
-            <span>Workspace</span>
+            ${renderLabel("Workspace", "Workspace preset used as the working directory for all agents in this session.")}
             <select id="launch-workspace">${workspaceOptions}</select>
           </label>
         </div>
@@ -713,8 +769,7 @@ function renderDashboardPage(): string {
     </section>
     <section class="panel page-section">
       <div class="section-head">
-        <h3>Session Overview</h3>
-        <p class="muted">Pick a session to open its detail view.</p>
+        <h3>Sessions</h3>
       </div>
       <div class="session-grid">
         ${sessions.length === 0 ? `<p class="muted">No sessions yet.</p>` : sessions.map(renderDashboardSessionCard).join("")}
@@ -748,13 +803,15 @@ function renderDashboardSessionCard(session: AnyObject): string {
   `;
 }
 function configuredChannelList(config: AnyObject): string[] {
+  const teamChannels = parseChannelListInput((config?.defaults?.extraChannels || []).join(","));
   const values = [
     String(config?.defaults?.goalChannel || "").trim(),
-    String(config?.defaults?.researchChannel || "").trim(),
-    String(config?.defaults?.implementationChannel || "").trim(),
-    String(config?.defaults?.reviewChannel || "").trim(),
     String(config?.defaults?.operatorChannel || "").trim(),
-    ...((config?.defaults?.extraChannels || []).map((value: unknown) => String(value ?? "").trim())),
+    ...teamChannels,
+    ...((config?.agents || []).flatMap((agent: AnyObject) => [
+      String(agent?.publishChannel || "").trim(),
+      ...((agent?.listenChannels || []).map((value: unknown) => String(value ?? "").trim())),
+    ])),
   ];
   return [...new Set(values.filter(Boolean))];
 }
@@ -768,35 +825,15 @@ function parseChannelListInput(value: string): string[] {
   )];
 }
 
-function defaultPublishChannelForRole(role: string, config: AnyObject): string {
-  if (role === "implementation") {
-    return String(config?.defaults?.implementationChannel || "implementation");
-  }
-  if (role === "review") {
-    return String(config?.defaults?.reviewChannel || "review");
-  }
-  if (role === "general") {
-    return String(config?.defaults?.goalChannel || "goal");
-  }
-  return String(config?.defaults?.researchChannel || "research");
+function defaultPublishChannelForAgent(config: AnyObject): string {
+  const channels = configuredChannelList(config).filter((channel) => channel !== String(config?.defaults?.goalChannel || "goal") && channel !== String(config?.defaults?.operatorChannel || "operator"));
+  return channels[0] || String(config?.defaults?.goalChannel || "goal");
 }
 
-function defaultListenChannelsForRole(role: string, config: AnyObject): string[] {
+function defaultListenChannelsForAgent(config: AnyObject): string[] {
   const goal = String(config?.defaults?.goalChannel || "goal");
-  const research = String(config?.defaults?.researchChannel || "research");
-  const implementation = String(config?.defaults?.implementationChannel || "implementation");
-  const review = String(config?.defaults?.reviewChannel || "review");
   const operator = String(config?.defaults?.operatorChannel || "operator");
-  if (role === "implementation") {
-    return [research, review, operator];
-  }
-  if (role === "review") {
-    return [implementation, operator];
-  }
-  if (role === "general") {
-    return [goal, research, implementation, review, operator];
-  }
-  return [goal, research, implementation, operator];
+  return [...new Set([goal, operator])];
 }
 
 function remapSemanticChannel(channel: string, previousDefaults: AnyObject, nextDefaults: AnyObject): string {
@@ -806,9 +843,6 @@ function remapSemanticChannel(channel: string, previousDefaults: AnyObject, next
   }
   const pairs: Array<[string, string]> = [
     [String(previousDefaults?.goalChannel || "goal"), String(nextDefaults?.goalChannel || "goal")],
-    [String(previousDefaults?.researchChannel || "research"), String(nextDefaults?.researchChannel || "research")],
-    [String(previousDefaults?.implementationChannel || "implementation"), String(nextDefaults?.implementationChannel || "implementation")],
-    [String(previousDefaults?.reviewChannel || "review"), String(nextDefaults?.reviewChannel || "review")],
     [String(previousDefaults?.operatorChannel || "operator"), String(nextDefaults?.operatorChannel || "operator")],
   ];
   for (const [before, after] of pairs) {
@@ -817,15 +851,6 @@ function remapSemanticChannel(channel: string, previousDefaults: AnyObject, next
     }
   }
   return value;
-}
-
-function renderRoleSelect(attributes: string, selected: string): string {
-  const roles = ["research", "implementation", "review", "general"];
-  return `
-    <select ${attributes}>
-      ${roles.map((role) => `<option value="${role}" ${selected === role ? "selected" : ""}>${role}</option>`).join("")}
-    </select>
-  `;
 }
 
 function renderChannelSelect(attributes: string, channels: string[], selected: string, emptyLabel = "Select channel"): string {
@@ -837,14 +862,14 @@ function renderChannelSelect(attributes: string, channels: string[], selected: s
   return `<select ${attributes}>${options.join("")}</select>`;
 }
 
-function renderListenChannelPicker(index: number, channels: string[], selectedValues: string[]): string {
+function renderChannelCheckboxPicker(attributeName: string, index: number, channels: string[], selectedValues: string[]): string {
   const selected = [...new Set(selectedValues.map((value) => String(value || "").trim()).filter(Boolean))];
   const options = [...new Set([...channels, ...selected])];
   return `
     <div class="channel-picker">
       ${options.map((channel) => `
         <label class="channel-chip">
-          <input type="checkbox" data-agent-listen-option="${index}" value="${escapeHtml(channel)}" ${selected.includes(channel) ? "checked" : ""} />
+          <input type="checkbox" ${attributeName}="${index}" value="${escapeHtml(channel)}" ${selected.includes(channel) ? "checked" : ""} />
           <span>${escapeHtml(channel)}</span>
         </label>
       `).join("")}
@@ -852,9 +877,50 @@ function renderListenChannelPicker(index: number, channels: string[], selectedVa
   `;
 }
 
+function renderAgentCheckboxPicker(attributeName: string, index: number, options: string[], selectedValues: string[]): string {
+  const selected = [...new Set(selectedValues.map((value) => String(value || "").trim()).filter(Boolean))];
+  const values = [...new Set([...options, ...selected])];
+  return `
+    <div class="channel-picker">
+      ${values.map((value) => `
+        <label class="channel-chip">
+          <input type="checkbox" ${attributeName}="${index}" value="${escapeHtml(value)}" ${selected.includes(value) ? "checked" : ""} />
+          <span>${escapeHtml(value)}</span>
+        </label>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderOptionCheckboxPicker(attributeName: string, options: string[], selectedValues: string[]): string {
+  const selected = [...new Set(selectedValues.map((value) => String(value || "").trim()).filter(Boolean))];
+  const values = [...new Set([...options, ...selected])];
+  return `
+    <div class="channel-picker">
+      ${values.map((value) => `
+        <label class="channel-chip">
+          <input type="checkbox" ${attributeName} value="${escapeHtml(value)}" ${selected.includes(value) ? "checked" : ""} />
+          <span>${escapeHtml(value)}</span>
+        </label>
+      `).join("")}
+    </div>
+  `;
+}
+
+function parseLineListInput(value: string): string[] {
+  return [...new Set(
+    String(value || "")
+      .split(/\r?\n/g)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )];
+}
+
 function renderWorkspacesPage(): string {
   const config = currentConfig();
   const current = selectedWorkspace();
+  const workspaceCount = (config.workspaces || []).length;
+  const defaultWorkspace = config.defaults.defaultWorkspaceName || "No default workspace";
   const workspaceList = (config.workspaces || []).map((workspace: AnyObject) => {
     const isSelected = current?.name === workspace.name;
     const isDefault = config.defaults.defaultWorkspaceName === workspace.name;
@@ -874,16 +940,16 @@ function renderWorkspacesPage(): string {
         <div class="workspace-row-head">
           <label class="radio-line">
             <input type="radio" name="default-workspace" value="${escapeHtml(workspace.name)}" ${config.defaults.defaultWorkspaceName === workspace.name ? "checked" : ""} />
-            <span>Default workspace</span>
+            <span>Default workspace ${renderHint("This workspace is selected by default when you launch a new session without manually picking another preset.")}</span>
           </label>
           <button class="ghost tiny" data-remove-workspace="${index}">Delete</button>
         </div>
         <label>
-          <span>Name</span>
+          ${renderLabel("Name", "Preset name shown in the workspace list and session launch form.")}
           <input data-workspace-name="${index}" value="${escapeHtml(workspace.name)}" placeholder="Workspace name" />
         </label>
         <label>
-          <span>Path</span>
+          ${renderLabel("Path", "Absolute or relative filesystem path used as the shared working directory for the session.")}
           <input data-workspace-path="${index}" value="${escapeHtml(workspace.path)}" placeholder="Workspace path" />
         </label>
       </article>
@@ -891,12 +957,22 @@ function renderWorkspacesPage(): string {
   }).join("");
 
   return `
+    <section class="panel utility-hero">
+      <div class="utility-hero-copy">
+        <p class="eyebrow">Workspace Library</p>
+        <h3>Workspace Presets</h3>
+      </div>
+      <div class="hero-meta">
+        <span>${escapeHtml(String(workspaceCount))} presets</span>
+        <span>${escapeHtml(defaultWorkspace)}</span>
+      </div>
+    </section>
     <section class="page-section settings-workspace-layout">
       <section class="panel workspace-list-panel">
         <div class="section-head">
           <div>
-            <p class="eyebrow">Workspaces</p>
-            <h3>Workspace Presets</h3>
+            <p class="eyebrow">Library</p>
+            <h3>Saved Workspaces</h3>
           </div>
           <div class="inline-actions">
             <button id="quick-create-workspace" class="ghost">Create Now</button>
@@ -910,9 +986,8 @@ function renderWorkspacesPage(): string {
       <section class="panel workspace-detail-panel">
         <div class="section-head">
           <div>
-            <p class="eyebrow">Selected Workspace</p>
+            <p class="eyebrow">Editor</p>
             <h3>${escapeHtml(current?.name || "No workspace selected")}</h3>
-            <p class="muted">Workspace changes stay local to this page until you save them.</p>
           </div>
           <div class="inline-actions">
             ${current ? `<span class="status-pill idle">${escapeHtml(config.defaults.defaultWorkspaceName === current.name ? "default" : "saved")}</span>` : ""}
@@ -931,8 +1006,13 @@ function renderWorkspacesPage(): string {
 function renderSettingsPage(): string {
   const config = currentConfig();
   const options = modelOptions(config);
+  const reasoningOptions = reasoningEffortOptions(config);
+  const mcpServers = mcpOptions();
   const channels = configuredChannelList(config);
   const internalChannels = ["status", "system", "control"];
+  const agentCount = (config.agents || []).length;
+  const channelCount = channels.length;
+  const agentIds = (config.agents || []).map((agent: AnyObject) => String(agent.id || "").trim()).filter(Boolean);
   const agentRows = (config.agents || []).map((agent: AnyObject, index: number) => `
     <article class="agent-editor-card">
       <div class="workspace-row-head">
@@ -941,58 +1021,133 @@ function renderSettingsPage(): string {
       </div>
       <div class="two-col-grid">
         <label>
-          <span>Name</span>
+          ${renderLabel("Name", "Stable identifier shown in the session UI and used for targeted routing.")}
           <input data-agent-name="${index}" value="${escapeHtml(agent.name)}" placeholder="Agent name" />
         </label>
         <label>
-          <span>Role</span>
-          ${renderRoleSelect(`data-agent-role="${index}"`, String(agent.role || "research"))}
+          ${renderLabel("Publish Channel", "Default channel this agent writes to when it broadcasts or sends untargeted team updates.")}
+          ${renderChannelSelect(`data-agent-channel="${index}"`, channels, String(agent.publishChannel || ""), "Select publish channel")}
         </label>
       </div>
       <div class="two-col-grid">
         <label>
-          <span>Publish channel</span>
-          ${renderChannelSelect(`data-agent-channel="${index}"`, channels, String(agent.publishChannel || ""), "Select publish channel")}
+          ${renderLabel("Listen Channels", "Channels that can wake this agent or appear in its pending work.")}
+          ${renderChannelCheckboxPicker("data-agent-listen-option", index, channels, Array.isArray(agent.listenChannels) ? agent.listenChannels : [])}
         </label>
         <label>
-          <span>Listen channels</span>
-          ${renderListenChannelPicker(index, channels, Array.isArray(agent.listenChannels) ? agent.listenChannels : [])}
+          ${renderLabel("Done Reopen Channels", "Channels that can reopen an agent after it previously marked itself done.")}
+          ${renderChannelCheckboxPicker("data-agent-reopen-option", index, channels, Array.isArray(agent.policy?.doneReopenChannels) ? agent.policy.doneReopenChannels : [])}
+        </label>
+      </div>
+      <div class="two-col-grid">
+        <label>
+          ${renderLabel("Observe Targeted Channels", "Targeted events on these channels stay visible enough to wake this agent as an observer, even if the message was sent to someone else.")}
+          ${renderChannelCheckboxPicker("data-agent-observe-targeted-option", index, channels, Array.isArray(agent.policy?.observeTargetedChannels) ? agent.policy.observeTargetedChannels : [])}
+        </label>
+        <label>
+          ${renderLabel("Allowed Target Agents", "Server-side allowlist for direct targets. Any disallowed target is stripped before publish.")}
+          ${renderAgentCheckboxPicker("data-agent-target-allow-option", index, agentIds.filter((value: string) => value !== String(agent.id || "").trim()), Array.isArray(agent.policy?.allowedTargetAgentIds) ? agent.policy.allowedTargetAgentIds : [])}
+        </label>
+      </div>
+      <div class="two-col-grid">
+        <label>
+          ${renderLabel("Activation Channels", "Channels used when deciding whether this agent has enough context to start working instead of waiting.")}
+          ${renderChannelCheckboxPicker("data-agent-activation-option", index, channels, Array.isArray(agent.policy?.activationChannels) ? agent.policy.activationChannels : [])}
+        </label>
+        <div class="two-col-grid">
+          <label>
+            ${renderLabel("Activation Min Events", "Minimum number of matching events required before the activation gate opens. Set 0 to disable the count gate.")}
+            <input data-agent-activation-events="${index}" type="number" min="0" value="${escapeHtml(String(agent.policy?.activationMinEvents ?? 0))}" />
+          </label>
+          <label>
+            ${renderLabel("Activation Min Senders", "Minimum number of unique senders required before the activation gate opens. Set 0 to disable the sender gate.")}
+            <input data-agent-activation-senders="${index}" type="number" min="0" value="${escapeHtml(String(agent.policy?.activationMinUniqueSenders ?? 0))}" />
+          </label>
+        </div>
+      </div>
+      <div class="two-col-grid">
+        <label>
+          ${renderLabel("Peer Context Channels", "Channels this agent must see from another sender before deferred targets become available. This avoids escalating too early.")}
+          ${renderChannelCheckboxPicker("data-agent-peer-context-option", index, channels, Array.isArray(agent.policy?.peerContextChannels) ? agent.policy.peerContextChannels : [])}
+        </label>
+        <label>
+          ${renderLabel("Defer Target Agents Until Peer Context", "Targets here are stripped until the agent has seen peer context on the channels above, unless the operator or a direct request bypasses the rule.")}
+          ${renderAgentCheckboxPicker("data-agent-defer-target-option", index, agentIds.filter((value: string) => value !== String(agent.id || "").trim()), Array.isArray(agent.policy?.deferTargetAgentIdsUntilPeerContext) ? agent.policy.deferTargetAgentIdsUntilPeerContext : [])}
+        </label>
+      </div>
+      <div class="two-col-grid">
+        <label>
+          ${renderLabel("Mute Follow-up Channels", "Channels this agent should stop reacting to once its branch has already progressed far enough.")}
+          ${renderChannelCheckboxPicker("data-agent-mute-followup-option", index, channels, Array.isArray(agent.policy?.muteFollowupChannels) ? agent.policy.muteFollowupChannels : [])}
+        </label>
+        <label>
+          ${renderLabel("Mute After Channel Activity", "If activity appears on any selected channel, follow-up channels above are muted more aggressively.")}
+          ${renderChannelCheckboxPicker("data-agent-mute-activity-option", index, channels, Array.isArray(agent.policy?.muteOnChannelActivity) ? agent.policy.muteOnChannelActivity : [])}
         </label>
       </div>
       <label>
-        <span>Model</span>
-        ${renderModelSelect(`data-agent-model="${index}"`, options, agent.model, "Use default model")}
+        ${renderLabel("Targeted-only Channels", "Broadcast traffic on these channels will not wake this agent. Only direct targeted events on these channels are routed in.")}
+        ${renderChannelCheckboxPicker("data-agent-targeted-only-option", index, channels, Array.isArray(agent.policy?.targetedOnlyChannels) ? agent.policy.targetedOnlyChannels : [])}
       </label>
       <label>
-        <span>Brief</span>
+        ${renderLabel("Model", "Optional per-agent model override. Leave empty to use the runtime default.")}
+        ${renderModelSelect(`data-agent-model="${index}"`, options, agent.model, "Use default model")}
+      </label>
+      <label class="check-line">
+        <input data-agent-force-broadcast="${index}" type="checkbox" ${agent.policy?.forceBroadcastOnFirstTurn ? "checked" : ""} />
+        <span>Force broadcast on first turn ${renderHint("Prevents the first team message from being narrowly targeted. Useful when you want the room to see the first take before routing gets more selective.")}</span>
+      </label>
+      <label>
+        ${renderLabel("Brief", "Short role description injected into the prompt for this agent.")}
         <textarea data-agent-brief="${index}" placeholder="Agent brief">${escapeHtml(agent.brief)}</textarea>
+      </label>
+      <label>
+        ${renderLabel("Prompt Guidance", "One instruction per line. These lines are appended to the agent prompt on every turn.")}
+        <textarea data-agent-guidance="${index}" placeholder="one instruction per line">${escapeHtml((Array.isArray(agent.policy?.promptGuidance) ? agent.policy.promptGuidance : []).join("\n"))}</textarea>
       </label>
     </article>
   `).join("");
 
   return `
+    <section class="panel utility-hero">
+      <div class="utility-hero-copy">
+        <p class="eyebrow">System Design</p>
+        <h3>Runtime and Team</h3>
+      </div>
+      <div class="hero-meta">
+        <span>${escapeHtml(String(agentCount))} agents</span>
+        <span>${escapeHtml(String(channelCount))} named channels</span>
+      </div>
+    </section>
     <section class="page-section split-layout">
       <section class="panel">
         <div class="section-head">
           <div>
             <p class="eyebrow">Runtime</p>
-            <h3>Codex Runtime Settings</h3>
+            <h3>Codex Runtime</h3>
           </div>
           <button id="save-runtime-team" class="primary">Save Runtime & Team</button>
         </div>
         <div class="settings-form-grid">
-          <label><span>Language</span><input id="cfg-language" value="${escapeHtml(config.defaults.language)}" /></label>
-          <label><span>Server Host</span><input id="cfg-host" value="${escapeHtml(config.defaults.serverHost)}" /></label>
-          <label><span>Server Port</span><input id="cfg-port" value="${escapeHtml(String(config.defaults.serverPort))}" /></label>
-          <label><span>History Tail</span><input id="cfg-history-tail" value="${escapeHtml(String(config.defaults.historyTail))}" /></label>
-          <label class="wide"><span>Codex Command</span><input id="cfg-codex-command" value="${escapeHtml(config.defaults.codexCommand)}" /></label>
-          <label><span>Default Model</span>${renderModelSelect('id="cfg-model"', options, config.defaults.model, "No default model")}</label>
-          <label><span>Sandbox</span>
+          <label>${renderLabel("Language", "Language instruction used in the shared session prompt.")}<input id="cfg-language" value="${escapeHtml(config.defaults.language)}" /></label>
+          <label>${renderLabel("Server Host", "Host address for the local web UI server.")}<input id="cfg-host" value="${escapeHtml(config.defaults.serverHost)}" /></label>
+          <label>${renderLabel("Server Port", "Port for the local web UI server.")}<input id="cfg-port" value="${escapeHtml(String(config.defaults.serverPort))}" /></label>
+          <label>${renderLabel("History Tail", "How many recent transcript items are kept in the prompt tail for each turn.")}<input id="cfg-history-tail" value="${escapeHtml(String(config.defaults.historyTail))}" /></label>
+          <label class="wide">${renderLabel("Codex Command", "Executable used to launch Codex for every agent turn.")}<input id="cfg-codex-command" value="${escapeHtml(config.defaults.codexCommand)}" /></label>
+          <label>${renderLabel("Codex Home Mode", "Use the global ~/.codex home, or a project-owned Codex home generated only for codex_team.")} 
+            <select id="cfg-codex-home-mode">
+              ${["project", "global"].map((item) => `<option value="${item}" ${config.defaults.codexHomeMode === item ? "selected" : ""}>${item}</option>`).join("")}
+            </select>
+          </label>
+          <label class="wide">${renderLabel("Codex Home Dir", "Used when Codex Home Mode is project. codex_team generates a dedicated config.toml here and can copy only the selected MCP servers into it.")}<input id="cfg-codex-home-dir" value="${escapeHtml(String(config.defaults.codexHomeDir || ""))}" /></label>
+          <label>${renderLabel("Default Model", "Fallback model when an agent does not specify its own override.")}${renderModelSelect('id="cfg-model"', options, config.defaults.model, "No default model")}</label>
+          <label>${renderLabel("Reasoning Effort", "Default model reasoning effort passed into Codex for every agent turn unless you change the runtime again later.")}${renderReasoningEffortSelect('id="cfg-reasoning-effort"', reasoningOptions, config.defaults.modelReasoningEffort, "Use Codex default")}</label>
+          <label>${renderLabel("Sandbox", "Filesystem isolation mode passed to Codex.")} 
             <select id="cfg-sandbox">
               ${["read-only", "workspace-write", "danger-full-access"].map((item) => `<option value="${item}" ${config.defaults.sandbox === item ? "selected" : ""}>${item}</option>`).join("")}
             </select>
           </label>
-          <label><span>Approval</span>
+          <label>${renderLabel("Approval", "Approval policy passed to Codex when it requests privileged actions.")} 
             <select id="cfg-approval">
               ${["untrusted", "on-request", "on-failure", "never"].map((item) => `<option value="${item}" ${config.defaults.approvalPolicy === item ? "selected" : ""}>${item}</option>`).join("")}
             </select>
@@ -1000,40 +1155,46 @@ function renderSettingsPage(): string {
           <div class="wide auto-models-box">
             <div class="section-head tight">
               <div>
-                <span>Detected Models</span>
+                <span>Detected Models ${renderHint("Auto-discovered from the local Codex installation. These values populate the model dropdowns.")}</span>
                 <p class="muted">${escapeHtml(modelCatalogSummary())}</p>
               </div>
               <button id="refresh-models" class="ghost tiny">Reload</button>
             </div>
             <pre>${escapeHtml(options.join("\n") || "No models detected yet.")}</pre>
           </div>
-          <label class="check-line"><input id="cfg-search" type="checkbox" ${config.defaults.search ? "checked" : ""} /><span>Allow internet search</span></label>
-          <label class="check-line"><input id="cfg-dangerous" type="checkbox" ${config.defaults.dangerousBypass ? "checked" : ""} /><span>Dangerous bypass</span></label>
+          <div class="wide auto-models-box">
+            <div class="section-head tight">
+              <div>
+                <span>MCP Servers ${renderHint("Only these selected MCP servers are copied into the dedicated project Codex home. Leave this empty to run the team without project-local MCP integrations.")}</span>
+                <p class="muted">${escapeHtml(mcpCatalogSummary())}</p>
+              </div>
+            </div>
+            ${mcpServers.length > 0
+              ? renderOptionCheckboxPicker("data-mcp-server-option", mcpServers, Array.isArray(config.defaults.mcpServerNames) ? config.defaults.mcpServerNames : [])
+              : `<p class="muted">No MCP servers detected.</p>`}
+          </div>
+          <label class="check-line"><input id="cfg-search" type="checkbox" ${config.defaults.search ? "checked" : ""} /><span>Allow web search ${renderHint("Lets Codex use live web search when the runtime invokes it with search enabled.")}</span></label>
+          <label class="check-line"><input id="cfg-dangerous" type="checkbox" ${config.defaults.dangerousBypass ? "checked" : ""} /><span>Dangerous bypass ${renderHint("Uses Codex's approval bypass flag. Only use this when you fully trust the workspace and runtime.")}</span></label>
         </div>
       </section>
       <section class="panel">
         <div class="section-head">
           <div>
             <p class="eyebrow">Channels</p>
-            <h3>Workflow Channels</h3>
-            <p class="muted">Rename the workflow channels here. Internal channels stay reserved.</p>
+            <h3>Channel Catalog</h3>
           </div>
         </div>
         <div class="settings-form-grid">
-          <label><span>Goal channel</span><input id="cfg-goal-channel" value="${escapeHtml(config.defaults.goalChannel || "goal")}" /></label>
-          <label><span>Research channel</span><input id="cfg-research-channel" value="${escapeHtml(config.defaults.researchChannel || "research")}" /></label>
-          <label><span>Implementation channel</span><input id="cfg-implementation-channel" value="${escapeHtml(config.defaults.implementationChannel || "implementation")}" /></label>
-          <label><span>Review channel</span><input id="cfg-review-channel" value="${escapeHtml(config.defaults.reviewChannel || "review")}" /></label>
-          <label><span>Operator channel</span><input id="cfg-operator-channel" value="${escapeHtml(config.defaults.operatorChannel || "operator")}" /></label>
+          <label>${renderLabel("Goal Channel", "Session-wide objective channel. This is the main top-level objective signal.")}<input id="cfg-goal-channel" value="${escapeHtml(config.defaults.goalChannel || "goal")}" /></label>
+          <label>${renderLabel("Operator Channel", "Manual instruction channel used by the human operator or control UI.")}<input id="cfg-operator-channel" value="${escapeHtml(config.defaults.operatorChannel || "operator")}" /></label>
           <label class="wide">
-            <span>Extra channels</span>
+            ${renderLabel("Team Channels", "Named non-system channels shown across agent publish/listen selectors. One per line or comma-separated.")}
             <textarea id="cfg-extra-channels" placeholder="one channel per line or comma-separated">${escapeHtml((config.defaults.extraChannels || []).join("\n"))}</textarea>
           </label>
           <div class="wide auto-models-box">
             <div class="section-head tight">
               <div>
-                <span>Current channel list</span>
-                <p class="muted">These are the values shown to agents when editing publish/listen channels.</p>
+                <span>Current Channel List ${renderHint("Computed from defaults plus any channel already referenced by an agent. These are the options shown in the channel pickers.")}</span>
               </div>
             </div>
             <pre>${escapeHtml(channels.join("\n") || "-")}</pre>
@@ -1041,8 +1202,7 @@ function renderSettingsPage(): string {
           <div class="wide auto-models-box">
             <div class="section-head tight">
               <div>
-                <span>Internal channels</span>
-                <p class="muted">Reserved for runtime and logging.</p>
+                <span>Internal Channels ${renderHint("Reserved by the runtime. These are not meant to be used as normal team channels.")}</span>
               </div>
             </div>
             <pre>${escapeHtml(internalChannels.join("\n"))}</pre>
@@ -1056,7 +1216,6 @@ function renderSettingsPage(): string {
           <div>
             <p class="eyebrow">Agents</p>
             <h3>Team Presets</h3>
-            <p class="muted">Roles control agent behavior. Publish and listen channels are fully editable here.</p>
           </div>
           <div class="inline-actions">
             <button id="add-agent-row" class="primary">Add Agent</button>
@@ -1077,6 +1236,16 @@ function renderModelSelect(attributes: string, options: string[], selected: stri
   const selectOptions = [
     `<option value="">${escapeHtml(emptyLabel)}</option>`,
     ...deduped.map((model) => `<option value="${escapeHtml(model)}" ${normalized === model ? "selected" : ""}>${escapeHtml(model)}</option>`),
+  ];
+  return `<select ${attributes}>${selectOptions.join("")}</select>`;
+}
+
+function renderReasoningEffortSelect(attributes: string, options: string[], selected: string | null, emptyLabel: string): string {
+  const normalized = String(selected || "").trim();
+  const deduped = [...new Set(options.filter(Boolean))];
+  const selectOptions = [
+    `<option value="">${escapeHtml(emptyLabel)}</option>`,
+    ...deduped.map((value) => `<option value="${escapeHtml(value)}" ${normalized === value ? "selected" : ""}>${escapeHtml(value)}</option>`),
   ];
   return `<select ${attributes}>${selectOptions.join("")}</select>`;
 }
@@ -1474,8 +1643,8 @@ function renderSessionPage(): string {
 
   return `
     <section class="panel session-hero">
-      <div>
-        <p class="eyebrow">Session Detail</p>
+      <div class="session-title-block">
+        <p class="eyebrow">Session</p>
         <h3>${escapeHtml(session.title)}</h3>
         <p class="goal-copy">${escapeHtml(session.goal)}</p>
       </div>
@@ -1497,8 +1666,8 @@ function renderSessionPage(): string {
     <section class="panel command-deck">
       <div class="section-head">
         <div>
-          <p class="eyebrow">Operator</p>
-          <h3>Live Session Commands</h3>
+          <p class="eyebrow">Control</p>
+          <h3>Operator</h3>
         </div>
         <div class="inline-actions">
           <button data-nav="/" class="ghost">Dashboard</button>
@@ -1506,10 +1675,13 @@ function renderSessionPage(): string {
         </div>
       </div>
       <div class="command-layout">
-        <textarea id="session-command" placeholder="${isStopped ? "Resume this session to send new instructions" : "Enter a new goal or an additional instruction"}" ${isStopped ? "disabled" : ""}></textarea>
+        <label class="command-editor">
+          ${renderLabel("Command", "Replace the session goal or send a follow-up instruction into the room.")}
+          <textarea id="session-command" placeholder="${isStopped ? "Resume this session to send new instructions" : "Enter a new goal or an additional instruction"}" ${isStopped ? "disabled" : ""}></textarea>
+        </label>
         <div class="command-controls">
           <label>
-            <span>Instruction Target</span>
+            ${renderLabel("Instruction Target", "Leave empty to broadcast to the room. Pick one agent to send a direct operator instruction.")}
             <select id="session-target" ${isStopped ? "disabled" : ""}>${targetOptions}</select>
           </label>
           <button id="session-send-goal" class="primary" ${isStopped ? "disabled" : ""}>Replace Goal</button>
@@ -1521,8 +1693,7 @@ function renderSessionPage(): string {
     <section class="session-layout">
       <section class="panel feed-column">
         <div class="section-head">
-          <h3>Team Feed</h3>
-          <p class="muted">Live collaboration log</p>
+          <h3>Feed</h3>
         </div>
         <div class="feed-list tall" data-feed-list="1" data-scroll-key="team-feed" data-scroll-mode="prepend">${renderSessionFeed(session.id)}</div>
       </section>
@@ -1530,10 +1701,9 @@ function renderSessionPage(): string {
         <section class="panel">
           <div class="section-head">
             <div>
-              <p class="eyebrow">Agents</p>
-              <h3>Agent Selector</h3>
+              <p class="eyebrow">Focus</p>
+              <h3>Agents</h3>
             </div>
-            <p class="muted">View one agent at a time.</p>
           </div>
           <div class="agent-picker">
             ${agents.map(renderAgentPickerItem).join("")}
@@ -1576,7 +1746,7 @@ function renderFocusedAgentCard(sessionId: string, agent: AnyObject): string {
     <section class="panel agent-focus-card ${agent.waitingForInput ? "waiting" : ""} ${agent.status === "error" ? "error" : ""}">
       <div class="section-head tight">
         <div>
-          <p class="eyebrow">Selected Agent</p>
+          <p class="eyebrow">Agent</p>
           <h3>${escapeHtml(agent.name)}</h3>
           <p class="muted">${escapeHtml(agent.brief)}</p>
         </div>
@@ -1630,7 +1800,7 @@ function renderFeedItem(event: AnyObject): string {
     metaBits.push("direct input");
   }
   return `
-    <article class="feed-item">
+    <article class="feed-item ${targetAgentIds.length > 0 ? "targeted" : "broadcast"}" data-channel="${escapeHtml(String(event.channel || "").toLowerCase())}">
       <header>
         <strong>${escapeHtml(event.sender)}</strong>
         <span>${escapeHtml(event.channel)}</span>
@@ -1822,16 +1992,26 @@ function wireSettingsActions(): void {
       const config = currentConfig();
       const agents = config.agents || [];
       const nextIndex = agents.length + 1;
-      const role = "research";
       agents.push({
         id: `agent_${nextIndex}`,
         name: `agent_${nextIndex}`,
-        role,
-        brief: "Research independently and share novel findings.",
-        publishChannel: defaultPublishChannelForRole(role, config),
-        listenChannels: defaultListenChannelsForRole(role, config),
+        brief: "Operate according to your brief and the selected channels.",
+        publishChannel: defaultPublishChannelForAgent(config),
+        listenChannels: defaultListenChannelsForAgent(config),
         maxTurns: 0,
         model: null,
+        policy: {
+          promptGuidance: [],
+          activationChannels: [],
+          activationMinEvents: 0,
+          activationMinUniqueSenders: 0,
+          doneReopenChannels: [],
+          allowedTargetAgentIds: [],
+          observeTargetedChannels: [],
+          muteFollowupChannels: [],
+          muteOnChannelActivity: [],
+          forceBroadcastOnFirstTurn: false,
+        },
       });
       render();
     };
@@ -1926,12 +2106,16 @@ function gatherRuntimeTeamConfig(): AnyObject {
   current.defaults.serverPort = Number(qs<HTMLInputElement>("#cfg-port").value.trim() || "4280");
   current.defaults.historyTail = Number(qs<HTMLInputElement>("#cfg-history-tail").value.trim() || "14");
   current.defaults.codexCommand = qs<HTMLInputElement>("#cfg-codex-command").value.trim();
+  current.defaults.codexHomeMode = qs<HTMLSelectElement>("#cfg-codex-home-mode").value === "global" ? "global" : "project";
+  current.defaults.codexHomeDir = qs<HTMLInputElement>("#cfg-codex-home-dir").value.trim();
   current.defaults.model = qs<HTMLSelectElement>("#cfg-model").value.trim() || null;
+  current.defaults.modelReasoningEffort = qs<HTMLSelectElement>("#cfg-reasoning-effort").value.trim() || null;
   current.defaults.modelOptions = [];
+  current.defaults.mcpServerNames = Array.from(document.querySelectorAll<HTMLInputElement>('[data-mcp-server-option]'))
+    .filter((input) => input.checked)
+    .map((input) => input.value.trim())
+    .filter(Boolean);
   current.defaults.goalChannel = qs<HTMLInputElement>("#cfg-goal-channel").value.trim() || "goal";
-  current.defaults.researchChannel = qs<HTMLInputElement>("#cfg-research-channel").value.trim() || "research";
-  current.defaults.implementationChannel = qs<HTMLInputElement>("#cfg-implementation-channel").value.trim() || "implementation";
-  current.defaults.reviewChannel = qs<HTMLInputElement>("#cfg-review-channel").value.trim() || "review";
   current.defaults.operatorChannel = qs<HTMLInputElement>("#cfg-operator-channel").value.trim() || "operator";
   current.defaults.extraChannels = parseChannelListInput(qs<HTMLTextAreaElement>("#cfg-extra-channels").value);
   current.defaults.sandbox = qs<HTMLSelectElement>("#cfg-sandbox").value;
@@ -1940,14 +2124,56 @@ function gatherRuntimeTeamConfig(): AnyObject {
   current.defaults.dangerousBypass = qs<HTMLInputElement>("#cfg-dangerous").checked;
   current.agents = Array.from(document.querySelectorAll<HTMLElement>(".agent-editor-card")).map((row, index) => {
     const name = (row.querySelector("[data-agent-name]") as HTMLInputElement)?.value.trim() || `agent_${index + 1}`;
-    const role = (row.querySelector("[data-agent-role]") as HTMLSelectElement)?.value.trim() || "research";
     const model = (row.querySelector("[data-agent-model]") as HTMLSelectElement)?.value.trim() || null;
     const publishChannel = remapSemanticChannel(
-      (row.querySelector("[data-agent-channel]") as HTMLSelectElement)?.value.trim() || defaultPublishChannelForRole(role, current),
+      (row.querySelector("[data-agent-channel]") as HTMLSelectElement)?.value.trim() || defaultPublishChannelForAgent(current),
       previousDefaults,
       current.defaults,
-    ) || defaultPublishChannelForRole(role, current);
+    ) || defaultPublishChannelForAgent(current);
     const listenChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-listen-option]'))
+      .filter((input) => input.checked)
+      .map((input) => input.value.trim())
+      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
+      .filter(Boolean);
+    const activationChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-activation-option]'))
+      .filter((input) => input.checked)
+      .map((input) => input.value.trim())
+      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
+      .filter(Boolean);
+    const peerContextChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-peer-context-option]'))
+      .filter((input) => input.checked)
+      .map((input) => input.value.trim())
+      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
+      .filter(Boolean);
+    const doneReopenChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-reopen-option]'))
+      .filter((input) => input.checked)
+      .map((input) => input.value.trim())
+      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
+      .filter(Boolean);
+    const allowedTargetAgentIds = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-target-allow-option]'))
+      .filter((input) => input.checked)
+      .map((input) => input.value.trim())
+      .filter(Boolean);
+    const deferTargetAgentIdsUntilPeerContext = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-defer-target-option]'))
+      .filter((input) => input.checked)
+      .map((input) => input.value.trim())
+      .filter(Boolean);
+    const observeTargetedChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-observe-targeted-option]'))
+      .filter((input) => input.checked)
+      .map((input) => input.value.trim())
+      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
+      .filter(Boolean);
+    const targetedOnlyChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-targeted-only-option]'))
+      .filter((input) => input.checked)
+      .map((input) => input.value.trim())
+      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
+      .filter(Boolean);
+    const muteFollowupChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-mute-followup-option]'))
+      .filter((input) => input.checked)
+      .map((input) => input.value.trim())
+      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
+      .filter(Boolean);
+    const muteOnChannelActivity = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-mute-activity-option]'))
       .filter((input) => input.checked)
       .map((input) => input.value.trim())
       .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
@@ -1955,12 +2181,26 @@ function gatherRuntimeTeamConfig(): AnyObject {
     return {
       id: name.replace(/[^a-zA-Z0-9_]+/g, "_").toLowerCase(),
       name,
-      role,
       publishChannel,
-      brief: (row.querySelector("[data-agent-brief]") as HTMLTextAreaElement)?.value.trim() || "Research independently and share novel findings.",
-      listenChannels: listenChannels.length > 0 ? listenChannels : defaultListenChannelsForRole(role, current),
+      brief: (row.querySelector("[data-agent-brief]") as HTMLTextAreaElement)?.value.trim() || "Explore independently and share novel findings.",
+      listenChannels: listenChannels.length > 0 ? listenChannels : defaultListenChannelsForAgent(current),
       maxTurns: 0,
       model,
+      policy: {
+        promptGuidance: parseLineListInput((row.querySelector("[data-agent-guidance]") as HTMLTextAreaElement)?.value || ""),
+        activationChannels,
+        activationMinEvents: Number((row.querySelector("[data-agent-activation-events]") as HTMLInputElement)?.value || "0") || 0,
+        activationMinUniqueSenders: Number((row.querySelector("[data-agent-activation-senders]") as HTMLInputElement)?.value || "0") || 0,
+        peerContextChannels,
+        doneReopenChannels,
+        allowedTargetAgentIds,
+        deferTargetAgentIdsUntilPeerContext,
+        observeTargetedChannels,
+        targetedOnlyChannels,
+        muteFollowupChannels,
+        muteOnChannelActivity,
+        forceBroadcastOnFirstTurn: Boolean((row.querySelector("[data-agent-force-broadcast]") as HTMLInputElement)?.checked),
+      },
     };
   });
   return current;

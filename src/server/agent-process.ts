@@ -4,6 +4,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { AgentPreset, AgentSnapshot, AgentTurnResult, AppConfig, TokenUsage } from "../shared/types";
 import { AgentFiles, appendAgentHistory } from "./storage";
 import { ensureParent, normalizePath, nowIso, tailText } from "./utils";
+import { effectiveCodexHomeDir } from "./codex-home";
 
 export interface AgentProcessHooks {
   onState(state: Partial<Record<string, unknown>>): void;
@@ -61,21 +62,15 @@ function addTokenUsage(left: TokenUsage, right: TokenUsage): TokenUsage {
 }
 
 function operatingModeLines(agent: AgentPreset): string[] {
-  if (agent.role === "implementation") {
-    return [
-      "- Work in implementation mode by default. Turn research into concrete file changes when the workspace is ready.",
-      "- Use the workspace, inspect files, and propose or make concrete implementation steps instead of staying at abstract discussion.",
-    ];
-  }
-  if (agent.role === "review") {
-    return [
-      "- Work in review mode by default. Audit plans and implementation outputs for bugs, regressions, and missing tests.",
-      "- Be concrete and critical. Prefer actionable review findings over broad brainstorming.",
-    ];
+  const customLines = Array.isArray(agent.policy?.promptGuidance)
+    ? agent.policy.promptGuidance.map((line) => `- ${String(line ?? "").trim()}`).filter((line) => line !== "-")
+    : [];
+  if (customLines.length > 0) {
+    return customLines;
   }
   return [
-    "- Work in research mode by default unless the operator explicitly asks for implementation.",
-    "- Prioritize findings, tradeoffs, and decision support for the team.",
+    "- Work according to your standing brief and the current trigger.",
+    "- Use your configured channels and the visible team transcript to decide what to publish or who to target next.",
   ];
 }
 
@@ -93,16 +88,13 @@ function routingGuidanceLines(agent: AgentPreset, allAgents: AgentPreset[]): str
   const lines = [
     `- Available agent ids for targeted team messages: ${agentIds}.`,
     "- You may optionally set targetAgentId for one recipient or targetAgentIds for multiple recipients. Use null or [] to broadcast normally.",
+    "- Use targeted messages only when one or more specific agents need to act. Otherwise broadcast to the team channel you publish on.",
   ];
-  if (agent.role === "review") {
-    lines.push("- Review findings should usually target the implementer who needs to act on them, rather than broadcasting to all researchers.");
-  } else if (agent.role === "implementation") {
-    lines.push("- Implementation updates that mainly need validation should usually target the reviewer.");
-  } else {
-    lines.push("- Research findings should usually stay broadcast.");
-    lines.push("- On your first turn for a new goal, keep research findings broadcast by default. Do not target the implementer immediately unless the operator explicitly asks for implementation handoff.");
-    lines.push("- If your finding requires code changes, rework, or a concrete implementation action, target the implementer directly instead of only broadcasting it.");
-    lines.push("- If your finding is mainly a validation request on shipped code, target the reviewer or implementer directly.");
+  const allowedTargets = Array.isArray(agent.policy?.allowedTargetAgentIds)
+    ? agent.policy.allowedTargetAgentIds.map((value) => String(value ?? "").trim()).filter(Boolean)
+    : [];
+  if (allowedTargets.length > 0) {
+    lines.push(`- If you target another agent, you may only target these agent ids: ${allowedTargets.join(", ")}.`);
   }
   return lines;
 }
@@ -187,7 +179,7 @@ export class CodexAgentProcess {
       this.resumeNotice = [
         `Resume note for ${this.agent.name}: the previous session ended while your work was still in progress.`,
         `Continue from completed turn ${this.turnIndex}. Do not restart from scratch unless the current transcript requires it.`,
-        "If the previous attempt may have been interrupted mid-analysis or mid-implementation, explicitly treat this turn as a resume and continue from the saved team state.",
+        "If the previous attempt may have been interrupted mid-turn or mid-change, explicitly treat this turn as a resume and continue from the saved team state.",
       ].join("\n");
     } else {
       this.resumeNotice = [
@@ -202,7 +194,7 @@ export class CodexAgentProcess {
       throw new Error("Agent is already running a Codex turn.");
     }
     this.turnIndex += 1;
-    const token = `__CODEX_GROUP_END__${this.agent.id}_${Date.now()}_${this.turnIndex}`;
+    const token = `__CODEX_TEAM_END__${this.agent.id}_${Date.now()}_${this.turnIndex}`;
     const turnPrompt = [
       `You are ${this.agent.name}, one agent in a long-running multi-agent Codex collaboration runtime.`,
       `Standing brief: ${this.agent.brief}`,
@@ -222,12 +214,19 @@ export class CodexAgentProcess {
       "- Only give public working notes. Do not expose hidden reasoning.",
       "- Reply only when you add materially new evidence, a concrete contradiction, or a decision-changing action.",
       "- Do not reply just to agree, restate, lightly refine, or say that you support a prior point.",
+      "- If the primary trigger is a targeted message from a specific agent and your response is mainly for that sender, target your reply back to that sender by default.",
+      "- If the primary trigger is a targeted multi-agent handoff and your response is mainly for that same subset, keep the reply targeted to that subset instead of broadcasting.",
       "- If the recent transcript already contains your point in substance, set shouldReply=false and leave teamMessage empty.",
-      "- If your current research or review thread feels saturated for now, prefer shouldReply=false and completion=\"done\".",
+      "- If you have nothing new right now but may still add value after future team updates, set shouldReply=false and keep completion=\"continue\".",
+      "- Prefer shouldReply=false when you only validated, agreed, or found that a concern is stale and no one needs to act differently.",
+      "- If you reply, make the action owner obvious: either broadcast a team-level decision or target the exact next actor.",
+      "- Use completion=\"done\" only when your current branch looks genuinely exhausted until a new goal, operator instruction, implementation change, or targeted request gives you new information.",
+      "- When one specific agent should act next, use targetAgentId instead of relying only on broadcast.",
+      "- When two or more specific agents should act next, use targetAgentIds for a multi-target handoff.",
       "Return exactly this shape between the XML tags:",
-      "<codex-group-response>",
+      "<codex_team-response>",
       '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"completion":"continue"}',
-      "</codex-group-response>",
+      "</codex_team-response>",
       `Finish with this token on its own line: ${token}`,
     ].join("\n\n");
 
@@ -284,6 +283,7 @@ export class CodexAgentProcess {
         cwd: this.workspacePath,
         env: {
           ...process.env,
+          CODEX_HOME: effectiveCodexHomeDir(this.config),
           NO_COLOR: "1",
           FORCE_COLOR: "0",
         },
@@ -467,6 +467,9 @@ export class CodexAgentProcess {
       codexArgs.push("-m", effectiveModel);
     }
     codexArgs.push("-c", `web_search=\"${this.config.defaults.search ? "live" : "off"}\"`);
+    if (this.config.defaults.modelReasoningEffort) {
+      codexArgs.push("-c", `model_reasoning_effort=\"${this.config.defaults.modelReasoningEffort}\"`);
+    }
     if (this.config.defaults.dangerousBypass) {
       codexArgs.push("--dangerously-bypass-approvals-and-sandbox");
     } else if (this.config.defaults.sandbox === "workspace-write" && this.config.defaults.approvalPolicy === "on-request") {
@@ -546,51 +549,80 @@ export class CodexAgentProcess {
   }
 }
 
+function normalizeParsedTurnResult(parsed: Partial<AgentTurnResult> & { teamMessage?: string }, rawText: string): AgentTurnResult {
+  const notes = Array.isArray(parsed.workingNotes)
+    ? parsed.workingNotes.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+  const completion = parsed.completion === "done" || parsed.completion === "blocked" ? parsed.completion : "continue";
+  const parsedTargetAgentIds = Array.isArray(parsed.targetAgentIds)
+    ? parsed.targetAgentIds.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : [];
+  const singleTargetAgentId = String(parsed.targetAgentId ?? "").trim() || null;
+  const targetAgentIds = parsedTargetAgentIds.length > 0
+    ? [...new Set(parsedTargetAgentIds)]
+    : singleTargetAgentId
+      ? [singleTargetAgentId]
+      : [];
+  return {
+    shouldReply: Boolean(parsed.shouldReply) && Boolean(parsed.teamMessage),
+    workingNotes: notes.length > 0 ? notes : ["No public working notes were provided."],
+    teamMessage: String(parsed.teamMessage ?? "").trim(),
+    targetAgentId: targetAgentIds.length === 1 ? targetAgentIds[0] : null,
+    targetAgentIds,
+    completion,
+    rawText,
+  };
+}
+
+function repairMalformedResponseJson(payloadText: string): string {
+  return payloadText
+    .replace(/,\\"([A-Za-z0-9_]+)\\":/g, ',"$1":')
+    .replace(/\{\\"([A-Za-z0-9_]+)\\":/g, '{"$1":')
+    .replace(/:\\"([^"\\]*(?:\\.[^"\\]*)*)\\"(?=\s*[,}\]])/g, ':"$1"')
+    .replace(/\[\\"/g, '["')
+    .replace(/\\",\\"/g, '","')
+    .replace(/\\"\]/g, '"]')
+    .replace(/,\s*([}\]])/g, "$1");
+}
+
 export function parseAgentTurnResult(rawText: string): AgentTurnResult {
-  const match = [...rawText.matchAll(/<codex-group-response>([\s\S]*?)<\/codex-group-response>/g)].at(-1);
+  const match = [...rawText.matchAll(/<codex_team-response>([\s\S]*?)<\/codex_team-response>/g)].at(-1);
   const payloadText = match?.[1]?.trim() ?? "";
   if (!payloadText) {
     return {
       shouldReply: false,
       workingNotes: ["Structured response was missing."],
       teamMessage: "",
-      completion: "blocked",
+      targetAgentId: null,
+      targetAgentIds: [],
+      completion: "continue",
       rawText,
     };
   }
 
   try {
     const parsed = JSON.parse(payloadText) as Partial<AgentTurnResult> & { teamMessage?: string };
-    const notes = Array.isArray(parsed.workingNotes)
-      ? parsed.workingNotes.map((item) => String(item).trim()).filter(Boolean)
-      : [];
-    const completion = parsed.completion === "done" || parsed.completion === "blocked" ? parsed.completion : "continue";
-    const parsedTargetAgentIds = Array.isArray(parsed.targetAgentIds)
-      ? parsed.targetAgentIds.map((item) => String(item ?? "").trim()).filter(Boolean)
-      : [];
-    const singleTargetAgentId = String(parsed.targetAgentId ?? "").trim() || null;
-    const targetAgentIds = parsedTargetAgentIds.length > 0
-      ? [...new Set(parsedTargetAgentIds)]
-      : singleTargetAgentId
-        ? [singleTargetAgentId]
-        : [];
-    return {
-      shouldReply: Boolean(parsed.shouldReply) && Boolean(parsed.teamMessage),
-      workingNotes: notes.length > 0 ? notes : ["No public working notes were provided."],
-      teamMessage: String(parsed.teamMessage ?? "").trim(),
-      targetAgentId: targetAgentIds.length === 1 ? targetAgentIds[0] : null,
-      targetAgentIds,
-      completion,
-      rawText,
-    };
+    return normalizeParsedTurnResult(parsed, rawText);
   } catch (error) {
+    try {
+      const repairedPayload = repairMalformedResponseJson(payloadText);
+      const parsed = JSON.parse(repairedPayload) as Partial<AgentTurnResult> & { teamMessage?: string };
+      const normalized = normalizeParsedTurnResult(parsed, rawText);
+      normalized.workingNotes = [
+        ...normalized.workingNotes,
+        "Recovered from a malformed structured response.",
+      ];
+      return normalized;
+    } catch {
+      // fall through to non-fatal parse failure
+    }
     return {
       shouldReply: false,
       workingNotes: [`Response JSON parse failed: ${(error as Error).message}`],
       teamMessage: "",
       targetAgentId: null,
       targetAgentIds: [],
-      completion: "blocked",
+      completion: "continue",
       rawText,
     };
   }

@@ -5,7 +5,7 @@ import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { startWebServer } from "./server/server";
 import { AppConfig, AgentPreset } from "./shared/types";
-import { DEFAULT_CONFIG_PATH, createDefaultConfig, loadConfig, saveConfig } from "./server/config";
+import { DEFAULT_CONFIG_PATH, createDefaultConfig, defaultListenChannels, defaultPublishChannel, emptyAgentPolicy, loadConfig, saveConfig } from "./server/config";
 import { slugify } from "./server/utils";
 
 function parseArgs(argv: string[]): { command: string; flags: Map<string, string | boolean> } {
@@ -126,11 +126,12 @@ async function runAgentEditor(config: AppConfig, rl: any): Promise<AppConfig> {
       config.agents.push({
         id,
         name,
-        role: "research",
-        brief: brief || "Research independently and share novel findings.",
-        publishChannel: config.defaults.researchChannel,
-        listenChannels: [config.defaults.goalChannel, config.defaults.researchChannel, config.defaults.operatorChannel],
+        brief: brief || "Operate according to your brief and the selected channels.",
+        publishChannel: defaultPublishChannel(config.defaults),
+        listenChannels: defaultListenChannels(config.defaults),
         maxTurns: 0,
+        model: null,
+        policy: emptyAgentPolicy(),
       });
     } else if (choice === "e") {
       const index = Number((await rl.question("Agent number: ")).trim()) - 1;
@@ -198,7 +199,7 @@ async function main(): Promise<void> {
   const host = typeof flags.get("host") === "string" ? String(flags.get("host")) : undefined;
   const port = typeof flags.get("port") === "string" ? Number(flags.get("port")) : undefined;
   const server = await startWebServer({ configPath, host, port });
-  output.write(`Codex Group web UI: ${server.url}\n`);
+  output.write(`codex_team web UI: ${server.url}\n`);
 }
 
 void main();

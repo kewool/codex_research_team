@@ -1,6 +1,6 @@
-# codex-group
+# codex_team
 
-`codex-group` is now a TypeScript project with a local Node backend and a browser UI.
+`codex_team` is now a TypeScript project with a local Node backend and a browser UI.
 It keeps one long-lived Codex process per agent, streams agent output into the web UI, lets you inject `1/2/3/custom` input into a specific agent, and stores sessions under `runs/`.
 
 ## Stack
@@ -55,7 +55,8 @@ http://127.0.0.1:4280
 Main routes:
 
 - `/`: dashboard and session launch
-- `/workspaces`: workspace, agent, and runtime settings
+- `/workspaces`: workspace presets and paths
+- `/settings`: runtime, channels, and agent policies
 - `/sessions/<session-id>`: live session detail page
 
 ## CLI menus
@@ -92,7 +93,7 @@ node dist/cli.js init
 The project config lives in:
 
 ```text
-./codex-group.config.json
+./codex_team.config.json
 ```
 
 This stores:
