@@ -47,6 +47,11 @@ interface RuntimeAgent {
   drainTimer: ReturnType<typeof setTimeout> | null;
 }
 
+interface SubgoalUpdateResult {
+  changedIds: string[];
+  blockedBuildPromotion: boolean;
+}
+
 const SUBGOAL_STAGE_SET = new Set<SubgoalStage>([
   "open",
   "researching",
@@ -743,7 +748,8 @@ export class LiveSession {
     }
     agent.snapshot.turnCount += 1;
     agent.snapshot.lastConsumedSequence = Math.max(Number(agent.snapshot.lastConsumedSequence || 0), consumedSequence);
-    const changedSubgoalIds = this.applySubgoalUpdates(agentId, result.subgoalUpdates);
+    const subgoalResult = this.applySubgoalUpdates(agentId, result.subgoalUpdates);
+    const changedSubgoalIds = subgoalResult.changedIds;
     agent.snapshot.lastSeenSubgoalRevision = this.subgoalRevision;
     agent.snapshot.completion = result.completion;
     agent.snapshot.workingNotes = result.workingNotes;
@@ -780,7 +786,10 @@ export class LiveSession {
       ? normalizedTargetAgentIds.filter((value) => allowedTargetSet.has(value))
       : normalizedTargetAgentIds;
     const peerDeferredTargetAgentIds = this.applyPeerContextTargetDeferral(agent, restrictedTargetAgentIds);
-    const effectiveTargetAgentIds = this.shouldForceBroadcastOnFirstTurn(agent) ? [] : peerDeferredTargetAgentIds;
+    let effectiveTargetAgentIds = this.shouldForceBroadcastOnFirstTurn(agent) ? [] : peerDeferredTargetAgentIds;
+    if (subgoalResult.blockedBuildPromotion) {
+      effectiveTargetAgentIds = effectiveTargetAgentIds.filter((value) => value !== "implementer_1");
+    }
 
     const eventMetadata = {
       agentId,
@@ -901,6 +910,22 @@ export class LiveSession {
     return match?.id ?? null;
   }
 
+  private normalizeStageForAssignee(id: string | null, stage: SubgoalStage, currentSubgoalId?: string): SubgoalStage {
+    if (!id || stage !== "building") {
+      return stage;
+    }
+    const hasOtherBuildingSubgoal = this.subgoals.some(
+      (subgoal) =>
+        subgoal.id !== currentSubgoalId &&
+        subgoal.assigneeAgentId === id &&
+        subgoal.stage === "building",
+    );
+    if (hasOtherBuildingSubgoal) {
+      return "ready_for_build";
+    }
+    return stage;
+  }
+
   private sanitizeSubgoalUpdate(update: SubgoalUpdate): SubgoalUpdate | null {
     if (!update || typeof update !== "object") {
       return null;
@@ -922,22 +947,30 @@ export class LiveSession {
     };
   }
 
-  private applySubgoalUpdates(agentId: string, updates: SubgoalUpdate[] | undefined): string[] {
+  private applySubgoalUpdates(agentId: string, updates: SubgoalUpdate[] | undefined): SubgoalUpdateResult {
     const normalized = Array.isArray(updates) ? updates.map((update) => this.sanitizeSubgoalUpdate(update)).filter(Boolean) as SubgoalUpdate[] : [];
     if (normalized.length === 0) {
-      return [];
+      return { changedIds: [], blockedBuildPromotion: false };
     }
 
     const changedIds = new Set<string>();
+    let blockedBuildPromotion = false;
     for (const update of normalized.slice(0, 8)) {
       const existingIndex = update.id ? this.subgoals.findIndex((subgoal) => subgoal.id === update.id) : -1;
       const timestamp = nowIso();
       this.subgoalRevision += 1;
       if (existingIndex >= 0) {
         const existing = this.subgoals[existingIndex];
-        const stage = update.stage ? normalizeSubgoalStage(update.stage, existing.stage) : existing.stage;
-        const assigneeAgentId = update.assigneeAgentId != null
+        let requestedStage = update.stage ? normalizeSubgoalStage(update.stage, existing.stage) : existing.stage;
+        const explicitAssignee = update.assigneeAgentId != null
           ? (update.assigneeAgentId && this.agents.has(update.assigneeAgentId) ? update.assigneeAgentId : null)
+          : null;
+        const requestedAssignee = explicitAssignee !== null
+          ? explicitAssignee
+          : (requestedStage !== existing.stage ? this.defaultAssigneeForStage(requestedStage) : existing.assigneeAgentId);
+        const stage = this.normalizeStageForAssignee(requestedAssignee, requestedStage, existing.id);
+        const assigneeAgentId = explicitAssignee !== null
+          ? (stage === requestedStage ? explicitAssignee : this.defaultAssigneeForStage(stage))
           : (stage !== existing.stage ? this.defaultAssigneeForStage(stage) : existing.assigneeAgentId);
         this.subgoals[existingIndex] = {
           ...existing,
@@ -953,16 +986,23 @@ export class LiveSession {
         continue;
       }
 
-      const stage = normalizeSubgoalStage(update.stage, "researching");
+      let requestedStage = normalizeSubgoalStage(update.stage, "researching");
       const id = this.nextSubgoalId();
+      if (agentId === "coordinator_1" && requestedStage === "building") {
+        requestedStage = "ready_for_build";
+        blockedBuildPromotion = true;
+      }
+      const explicitAssignee = update.assigneeAgentId && this.agents.has(update.assigneeAgentId)
+        ? update.assigneeAgentId
+        : null;
+      const requestedAssignee = explicitAssignee ?? this.defaultAssigneeForStage(requestedStage);
+      const stage = this.normalizeStageForAssignee(requestedAssignee, requestedStage, id);
       this.subgoals.push({
         id,
         title: update.title || `Subgoal ${id}`,
         summary: update.summary || "No summary provided.",
         stage,
-        assigneeAgentId: update.assigneeAgentId && this.agents.has(update.assigneeAgentId)
-          ? update.assigneeAgentId
-          : this.defaultAssigneeForStage(stage),
+        assigneeAgentId: explicitAssignee && stage === requestedStage ? explicitAssignee : this.defaultAssigneeForStage(stage),
         updatedAt: timestamp,
         updatedBy: agentId,
         revision: this.subgoalRevision,
@@ -978,7 +1018,10 @@ export class LiveSession {
     });
     this.updatedAt = nowIso();
     this.persistSession();
-    return [...changedIds];
+    return {
+      changedIds: [...changedIds],
+      blockedBuildPromotion,
+    };
   }
 
   private actionableSubgoalsForAgent(agent: RuntimeAgent): SessionSubgoal[] {
