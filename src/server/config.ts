@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { dirname, resolve } from "node:path";
-import { AgentPolicy, AgentPreset, AppConfig, AppDefaults, SessionChannel } from "../shared/types";
+import { AgentPolicy, AgentPreset, AppConfig, AppDefaults, SessionChannel, SUBGOAL_STAGES, SubgoalStage } from "../shared/types";
 import { ensureDir, projectPath, readJson, writeJson } from "./utils";
 
 export const DEFAULT_CONFIG_PATH = projectPath("codex_team.config.json");
@@ -27,6 +27,21 @@ function normalizeGuidanceList(values: unknown): string[] {
     return [];
   }
   return values.map((value) => String(value ?? "").trim()).filter(Boolean);
+}
+
+function normalizeStageList(values: unknown): SubgoalStage[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const allowed = new Set<string>(SUBGOAL_STAGES);
+  const deduped = new Set<SubgoalStage>();
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (allowed.has(text)) {
+      deduped.add(text as SubgoalStage);
+    }
+  }
+  return [...deduped];
 }
 
 export function normalizeDefaults(defaults: Partial<AppDefaults> | undefined, fallback: AppDefaults): AppDefaults {
@@ -109,17 +124,8 @@ function ensureWorkspaceDefaults(config: AppConfig, root = process.cwd()): AppCo
 export function emptyAgentPolicy(): AgentPolicy {
   return {
     promptGuidance: [],
-    activationChannels: [],
-    activationMinEvents: 0,
-    activationMinUniqueSenders: 0,
-    peerContextChannels: [],
-    doneReopenChannels: [],
+    ownedStages: [],
     allowedTargetAgentIds: [],
-    deferTargetAgentIdsUntilPeerContext: [],
-    observeTargetedChannels: [],
-    targetedOnlyChannels: [],
-    muteFollowupChannels: [],
-    muteOnChannelActivity: [],
     forceBroadcastOnFirstTurn: false,
   };
 }
@@ -130,17 +136,8 @@ export function normalizeAgentPolicy(policy: Partial<AgentPolicy> | undefined): 
     ...base,
     ...(policy ?? {}),
     promptGuidance: normalizeGuidanceList(policy?.promptGuidance),
-    activationChannels: normalizeChannelList(Array.isArray(policy?.activationChannels) ? policy.activationChannels : []),
-    activationMinEvents: Math.max(0, Number(policy?.activationMinEvents ?? 0) || 0),
-    activationMinUniqueSenders: Math.max(0, Number(policy?.activationMinUniqueSenders ?? 0) || 0),
-    peerContextChannels: normalizeChannelList(Array.isArray(policy?.peerContextChannels) ? policy.peerContextChannels : []),
-    doneReopenChannels: normalizeChannelList(Array.isArray(policy?.doneReopenChannels) ? policy.doneReopenChannels : []),
+    ownedStages: normalizeStageList(policy?.ownedStages),
     allowedTargetAgentIds: normalizeChannelList(Array.isArray(policy?.allowedTargetAgentIds) ? policy.allowedTargetAgentIds : []),
-    deferTargetAgentIdsUntilPeerContext: normalizeChannelList(Array.isArray(policy?.deferTargetAgentIdsUntilPeerContext) ? policy.deferTargetAgentIdsUntilPeerContext : []),
-    observeTargetedChannels: normalizeChannelList(Array.isArray(policy?.observeTargetedChannels) ? policy.observeTargetedChannels : []),
-    targetedOnlyChannels: normalizeChannelList(Array.isArray(policy?.targetedOnlyChannels) ? policy.targetedOnlyChannels : []),
-    muteFollowupChannels: normalizeChannelList(Array.isArray(policy?.muteFollowupChannels) ? policy.muteFollowupChannels : []),
-    muteOnChannelActivity: normalizeChannelList(Array.isArray(policy?.muteOnChannelActivity) ? policy.muteOnChannelActivity : []),
     forceBroadcastOnFirstTurn: Boolean(policy?.forceBroadcastOnFirstTurn),
   };
 }
@@ -167,25 +164,15 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         ...emptyAgentPolicy(),
         promptGuidance: [
           "Explore independently and prioritize architecture options, constraints, assumptions, and concrete plans.",
+          "Use the goal board as your primary workspace. Refine open or researching subgoals, split broad work into smaller subgoals, and mark a subgoal ready_for_build only when research on that subgoal is strong enough to hand off.",
           "Stay at the research and planning layer by default. Do not spend turns on line-by-line code review, file-by-file bug hunting, or detailed test edits unless the operator explicitly asks for that depth.",
           "Treat the codebase as evidence, not as the main subject. Use it to confirm architecture, workflow, and product constraints, then return to the higher-level decision.",
-          "Do not turn your turn into a contract-audit or bug-audit report. If you discover a code-level defect, compress it into one short risk statement and hand it off instead of walking through files and functions.",
-          "Avoid long file-path, symbol, or implementation-detail enumerations. Focus on what the team should conclude, change in plan, or validate next.",
-          "Prefer broadcast updates unless a specific agent clearly needs to act next.",
-          "If another researcher should investigate a specific question next, target that researcher directly.",
-          "Discuss with the other researchers before escalating to coordinator_1. Do not hand work to coordinator_1 until you have seen peer research for this goal, unless the operator explicitly tells you to do so.",
-          "If implementation or review work should happen next after that discussion, hand it to coordinator_1 instead of targeting implementer_1 or reviewer_1 directly.",
-          "If you are replying mainly to one prior agent's message, target that reply back to the owner instead of broadcasting by habit.",
-          "If no one needs to act differently after your check, prefer shouldReply=false.",
+          "Do not target implementer_1 or reviewer_1 directly for raw research. When a subgoal is mature enough for implementation, update that subgoal to ready_for_build and let coordinator_1 route it.",
+          "Use direct targets mainly for researcher-to-researcher questions or to flag coordinator_1 after you have advanced a subgoal on the goal board.",
+          "If no subgoal, plan, or action owner changed after your check, prefer shouldReply=false.",
         ],
-        peerContextChannels: [exploreChannel],
-        doneReopenChannels: [exploreChannel, coordinationChannel],
+        ownedStages: ["open", "researching"],
         allowedTargetAgentIds: ["researcher_2", "researcher_3", "coordinator_1"],
-        deferTargetAgentIdsUntilPeerContext: ["coordinator_1"],
-        observeTargetedChannels: [],
-        targetedOnlyChannels: [],
-        muteFollowupChannels: [],
-        muteOnChannelActivity: [],
         forceBroadcastOnFirstTurn: true,
       },
     },
@@ -201,25 +188,15 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         ...emptyAgentPolicy(),
         promptGuidance: [
           "Explore independently and prioritize risks, tradeoffs, failure modes, and validation strategy.",
+          "Use the goal board as your primary workspace. Refine open or researching subgoals, surface failure modes against specific subgoals, and move a subgoal to ready_for_build only when its risk picture is clear enough for implementation.",
           "Focus on requirements, evaluation criteria, data assumptions, and likely breakpoints rather than detailed code-review findings.",
           "Treat code inspection as a way to confirm risk, not as the deliverable. If you notice a code-level defect, reduce it to one concise failure mode and hand it off instead of producing a deep audit.",
-          "Avoid long file-path, symbol, and function-level walkthroughs unless the operator explicitly asks for review depth.",
-          "Prioritize acceptance criteria, user-facing risk, reproducibility risk, and where the current direction is likely to fail.",
-          "Prefer broadcast updates unless a specific agent clearly needs to act next.",
-          "If another researcher should investigate a specific question next, target that researcher directly.",
-          "Discuss with the other researchers before escalating to coordinator_1. Do not hand work to coordinator_1 until you have seen peer research for this goal, unless the operator explicitly tells you to do so.",
-          "If implementation or review work should happen next after that discussion, hand it to coordinator_1 instead of targeting implementer_1 or reviewer_1 directly.",
-          "If you are replying mainly to one prior agent's message, target that reply back to the owner instead of broadcasting by habit.",
-          "If no one needs to act differently after your check, prefer shouldReply=false.",
+          "Do not target implementer_1 or reviewer_1 directly for raw research. When a subgoal is mature enough for implementation, update that subgoal to ready_for_build and let coordinator_1 route it.",
+          "Use direct targets mainly for researcher-to-researcher questions or to flag coordinator_1 after you have advanced a subgoal on the goal board.",
+          "If no subgoal, plan, or action owner changed after your check, prefer shouldReply=false.",
         ],
-        peerContextChannels: [exploreChannel],
-        doneReopenChannels: [exploreChannel, coordinationChannel],
+        ownedStages: ["open", "researching"],
         allowedTargetAgentIds: ["researcher_1", "researcher_3", "coordinator_1"],
-        deferTargetAgentIdsUntilPeerContext: ["coordinator_1"],
-        observeTargetedChannels: [],
-        targetedOnlyChannels: [],
-        muteFollowupChannels: [],
-        muteOnChannelActivity: [],
         forceBroadcastOnFirstTurn: true,
       },
     },
@@ -235,25 +212,15 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         ...emptyAgentPolicy(),
         promptGuidance: [
           "Explore independently and prioritize workflow design, handoff quality, evaluation plan, and operator impact.",
+          "Use the goal board as your primary workspace. Refine open or researching subgoals, split workflow concerns into concrete subgoals, and move a subgoal to ready_for_build only when the handoff is strong enough for execution.",
           "Avoid dropping into patch-level implementation review by default. Prefer system behavior, pipeline shape, tooling flow, and what the implementer or reviewer should validate next.",
           "Do not spend turns cataloging code/schema/path defects in detail. Convert them into workflow or operator-facing contract risks and move back up a level.",
-          "Treat the repository as one input to the workflow analysis, not as the thing you are reviewing line by line.",
-          "When a low-level issue matters, summarize the impact on handoff quality or operator flow instead of reciting implementation details.",
-          "Prefer broadcast updates unless a specific agent clearly needs to act next.",
-          "If another researcher should investigate a specific question next, target that researcher directly.",
-          "Discuss with the other researchers before escalating to coordinator_1. Do not hand work to coordinator_1 until you have seen peer research for this goal, unless the operator explicitly tells you to do so.",
-          "If implementation or review work should happen next after that discussion, hand it to coordinator_1 instead of targeting implementer_1 or reviewer_1 directly.",
-          "If you are replying mainly to one prior agent's message, target that reply back to the owner instead of broadcasting by habit.",
-          "If no one needs to act differently after your check, prefer shouldReply=false.",
+          "Do not target implementer_1 or reviewer_1 directly for raw research. When a subgoal is mature enough for implementation, update that subgoal to ready_for_build and let coordinator_1 route it.",
+          "Use direct targets mainly for researcher-to-researcher questions or to flag coordinator_1 after you have advanced a subgoal on the goal board.",
+          "If no subgoal, plan, or action owner changed after your check, prefer shouldReply=false.",
         ],
-        peerContextChannels: [exploreChannel],
-        doneReopenChannels: [exploreChannel, coordinationChannel],
+        ownedStages: ["open", "researching"],
         allowedTargetAgentIds: ["researcher_1", "researcher_2", "coordinator_1"],
-        deferTargetAgentIdsUntilPeerContext: ["coordinator_1"],
-        observeTargetedChannels: [],
-        targetedOnlyChannels: [],
-        muteFollowupChannels: [],
-        muteOnChannelActivity: [],
         forceBroadcastOnFirstTurn: true,
       },
     },
@@ -268,16 +235,14 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
       policy: {
         ...emptyAgentPolicy(),
         promptGuidance: [
-          "Act as the synthesis and routing layer for the team.",
-          "Absorb researcher findings, collapse overlap, surface contradictions, and decide what should happen next.",
-          "Do not jump on every raw research update. Wait for an explicit handoff or a clear coordination request instead of interrupting researcher-to-researcher discussion.",
-          "Send concrete implementation handoffs to implementer_1 and concrete audit requests to reviewer_1.",
-          "If evidence is still incomplete or conflicting, target the exact researcher who should investigate further instead of pushing premature work downstream.",
-          "Prefer shouldReply=false when there is no routing change, no conflict to resolve, and no new action owner to assign.",
+          "Act as the synthesis and routing layer for the goal board.",
+          "Watch for subgoals that become ready_for_build or blocked, resolve conflicts, and decide the next owner.",
+          "When research converges, move a subgoal from ready_for_build to building and assign it to implementer_1 with a concrete handoff.",
+          "If evidence is still incomplete or conflicting, move the subgoal back to researching and target the exact researcher who should investigate further.",
+          "Prefer shouldReply=false when the goal board did not materially change and no new action owner needs to be assigned.",
         ],
-        doneReopenChannels: [exploreChannel, buildChannel, auditChannel, coordinationChannel],
+        ownedStages: ["ready_for_build", "blocked"],
         allowedTargetAgentIds: ["researcher_1", "researcher_2", "researcher_3", "implementer_1", "reviewer_1"],
-        targetedOnlyChannels: [exploreChannel],
       },
     },
     {
@@ -291,11 +256,12 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
       policy: {
         ...emptyAgentPolicy(),
         promptGuidance: [
-          "Convert coordinator handoffs and reviewer findings into concrete changes in the workspace.",
+          "Convert subgoals in building into concrete changes in the workspace.",
+          "Advance a subgoal to ready_for_review when implementation is ready to audit, or blocked when execution reveals a real blocker.",
           "If the plan is unclear or conflicting, target coordinator_1 instead of pulling every researcher directly into implementation details.",
           "When a validation-only response is needed, target reviewer_1 instead of broadcasting broadly.",
         ],
-        doneReopenChannels: [auditChannel, coordinationChannel],
+        ownedStages: ["building"],
         allowedTargetAgentIds: ["reviewer_1", "coordinator_1"],
       },
     },
@@ -310,10 +276,11 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
       policy: {
         ...emptyAgentPolicy(),
         promptGuidance: [
-          "Audit changes for bugs, regressions, missing tests, and weak assumptions.",
-          "Send concrete findings back to implementer_1. If you need broader reframing, state it in the message but still target implementer_1.",
+          "Audit subgoals in ready_for_review for bugs, regressions, missing tests, and weak assumptions.",
+          "If a build passes review, move that subgoal to done. If fixes are required, move it back to building and target implementer_1.",
+          "If you uncover a deeper planning gap, mark the subgoal blocked and include the missing assumption or unresolved risk.",
         ],
-        doneReopenChannels: [buildChannel, coordinationChannel],
+        ownedStages: ["ready_for_review"],
         allowedTargetAgentIds: ["implementer_1"],
       },
     },

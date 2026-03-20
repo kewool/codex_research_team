@@ -7,8 +7,11 @@ import {
   AppConfig,
   SessionChannel,
   SessionEvent,
+  SessionSubgoal,
   SessionSnapshot,
   SessionStatus,
+  SubgoalStage,
+  SubgoalUpdate,
   TokenUsage,
 } from "../shared/types";
 import { CodexAgentProcess } from "./agent-process";
@@ -43,6 +46,16 @@ interface RuntimeAgent {
   draining: boolean;
   drainTimer: ReturnType<typeof setTimeout> | null;
 }
+
+const SUBGOAL_STAGE_SET = new Set<SubgoalStage>([
+  "open",
+  "researching",
+  "ready_for_build",
+  "building",
+  "ready_for_review",
+  "done",
+  "blocked",
+]);
 
 const RECENT_EVENT_LIMIT = 40;
 const SNAPSHOT_STREAM_TAIL = 2400;
@@ -249,6 +262,26 @@ function readSessionEvents(filePath: string): SessionEvent[] {
     .filter((event): event is SessionEvent => Boolean(event && Number(event.sequence) > 0));
 }
 
+function normalizeSubgoalStage(value: unknown, fallback: SubgoalStage = "researching"): SubgoalStage {
+  const stage = String(value ?? "").trim();
+  return SUBGOAL_STAGE_SET.has(stage as SubgoalStage) ? (stage as SubgoalStage) : fallback;
+}
+
+function createSeedSubgoal(goal: string, revision: number, timestamp: string): SessionSubgoal {
+  const normalized = compactWhitespace(goal);
+  const title = normalized.length > 72 ? `${normalized.slice(0, 69).trimEnd()}...` : normalized;
+  return {
+    id: "sg-1",
+    title: title || "Initial subgoal",
+    summary: normalized || "Investigate the top-level goal and break it down into actionable work.",
+    stage: "open",
+    assigneeAgentId: null,
+    updatedAt: timestamp,
+    updatedBy: "system",
+    revision,
+  };
+}
+
 export class LiveSession {
   readonly id: string;
   private readonly config: AppConfig;
@@ -261,6 +294,8 @@ export class LiveSession {
   private status: SessionStatus = "starting";
   private sequence = 0;
   private recentEvents: SessionEvent[] = [];
+  private subgoals: SessionSubgoal[] = [];
+  private subgoalRevision = 0;
   private readonly agents = new Map<string, RuntimeAgent>();
   private readonly subscribers = new Set<(payload: unknown) => void>();
   private updatedAt = nowIso();
@@ -290,9 +325,26 @@ export class LiveSession {
       }
       this.sequence = Number(options.snapshot.eventCount || 0);
       this.recentEvents = Array.isArray(options.snapshot.recentEvents) ? [...options.snapshot.recentEvents] : [];
+      this.subgoalRevision = Math.max(0, Number(options.snapshot.subgoalRevision || 0));
+      this.subgoals = Array.isArray(options.snapshot.subgoals)
+        ? options.snapshot.subgoals.map((subgoal) => ({
+            id: String(subgoal?.id ?? "").trim(),
+            title: String(subgoal?.title ?? "").trim() || "Untitled subgoal",
+            summary: String(subgoal?.summary ?? "").trim(),
+            stage: normalizeSubgoalStage(subgoal?.stage, "researching"),
+            assigneeAgentId: String(subgoal?.assigneeAgentId ?? "").trim() || null,
+            updatedAt: String(subgoal?.updatedAt ?? nowIso()),
+            updatedBy: String(subgoal?.updatedBy ?? "system"),
+            revision: Math.max(1, Number(subgoal?.revision || 1)),
+          }))
+        : [];
       this.updatedAt = String(options.snapshot.updatedAt || this.updatedAt);
       this.status = options.snapshot.status === "stopped" || options.snapshot.status === "error" ? "idle" : options.snapshot.status;
       this.historySerial = Math.max(0, this.sequence * 10);
+    }
+    if (this.subgoals.length === 0) {
+      this.subgoalRevision = Math.max(1, this.subgoalRevision || 1);
+      this.subgoals = [createSeedSubgoal(this.goal, this.subgoalRevision, this.updatedAt)];
     }
   }
 
@@ -354,7 +406,7 @@ export class LiveSession {
       void runtime.process
         .start(this.goal)
         .then(() => {
-          if (hasPendingDigest(runtime.pendingDigest) && this.status !== "stopped") {
+          if ((hasPendingDigest(runtime.pendingDigest) || this.goalBoardNeedsAttention(runtime)) && this.status !== "stopped") {
             this.scheduleAgentDrain(runtime.preset.id, true);
           }
         })
@@ -385,6 +437,7 @@ export class LiveSession {
             model: preset.model ?? this.config.defaults.model ?? restored.model ?? null,
             status: "starting",
             lastConsumedSequence: Number(restored.lastConsumedSequence ?? this.sequence),
+            lastSeenSubgoalRevision: Math.max(0, Number(restored.lastSeenSubgoalRevision ?? this.subgoalRevision ?? 0)),
             pendingSignals: 0,
             waitingForInput: false,
             lastError: "",
@@ -401,6 +454,7 @@ export class LiveSession {
             status: "starting",
             turnCount: 0,
             lastConsumedSequence: 0,
+            lastSeenSubgoalRevision: 0,
             pendingSignals: 0,
             waitingForInput: false,
             lastPrompt: "",
@@ -464,16 +518,19 @@ export class LiveSession {
       updatedAt: this.updatedAt,
       status: this.status,
       eventCount: this.sequence,
+      subgoalRevision: this.subgoalRevision,
       agentCount: this.agents.size,
       selectedAgentId: this.agents.keys().next().value ?? null,
       agents: [...this.agents.values()].map((entry) => ({ ...entry.snapshot })),
       recentEvents: [...this.recentEvents],
+      subgoals: this.subgoals.map((subgoal) => ({ ...subgoal })),
       totalUsage,
     };
   }
 
   async sendGoal(text: string): Promise<void> {
     this.goal = text.trim();
+    this.resetGoalBoard(this.goal, "operator");
     for (const agent of this.agents.values()) {
       agent.snapshot.completion = "continue";
     }
@@ -545,18 +602,14 @@ export class LiveSession {
       return false;
     }
     const targetIds = extractTargetAgentIds(event.metadata);
-    if (!this.isGoalEvent(event) && !this.isOperatorEvent(event) && targetIds.length === 0 && agent.preset.policy.targetedOnlyChannels.includes(event.channel)) {
+    if (targetIds.length > 0 && !targetIds.includes(agent.preset.id)) {
       return false;
     }
-    if (targetIds.length > 0 && !targetIds.includes(agent.preset.id)) {
-      if (!agent.preset.policy.observeTargetedChannels.includes(event.channel)) {
-        return false;
-      }
+    const ownsDiscoveryStages = agent.preset.policy.ownedStages.includes("open") || agent.preset.policy.ownedStages.includes("researching");
+    if (!this.isGoalEvent(event) && !this.isOperatorEvent(event) && targetIds.length === 0 && !ownsDiscoveryStages && this.discoveryChannels().has(event.channel)) {
+      return false;
     }
     if (this.shouldIgnoreCompletedAgent(agent, event)) {
-      return false;
-    }
-    if (this.shouldMuteFollowup(agent, event)) {
       return false;
     }
     return true;
@@ -617,7 +670,10 @@ export class LiveSession {
 
   private async drainAgent(agentId: string): Promise<void> {
     const agent = this.agents.get(agentId);
-    if (!agent || agent.draining || !hasPendingDigest(agent.pendingDigest) || agent.snapshot.status === "error" || agent.snapshot.status === "starting") {
+    if (!agent || agent.draining || agent.snapshot.status === "error" || agent.snapshot.status === "starting") {
+      return;
+    }
+    if (!hasPendingDigest(agent.pendingDigest) && !this.goalBoardNeedsAttention(agent)) {
       return;
     }
     if (agent.preset.maxTurns > 0 && agent.snapshot.turnCount >= agent.preset.maxTurns) {
@@ -635,7 +691,17 @@ export class LiveSession {
     agent.snapshot.pendingSignals = 0;
     this.updateAgentSnapshot(agentId, { status: "running" });
     const transcript = this.buildTranscript(agent, digest);
-    const triggerSummary = buildTriggerSummary(digest) || "(no new triggers)";
+    const digestSummary = buildTriggerSummary(digest);
+    const triggerSummary = [
+      "Goal board:",
+      this.buildGoalBoardSummary(agent),
+      "",
+      "Actionable subgoals for you:",
+      this.buildActionableSubgoalSummary(agent),
+      "",
+      "Message triggers for this turn:",
+      digestSummary || "(no new message triggers)",
+    ].join("\n");
 
     try {
       const result = await agent.process.runTurn(this.goal, transcript, triggerSummary);
@@ -657,10 +723,15 @@ export class LiveSession {
       agent.inFlightDigest = null;
       if (hasPendingDigest(agent.pendingDigest) && this.status !== "stopped") {
         this.scheduleAgentDrain(agentId, true);
-      } else if (this.status === "running" && [...this.agents.values()].every((entry) => !entry.draining && !hasPendingDigest(entry.pendingDigest))) {
-        this.status = "idle";
-        this.persistSession();
-        this.emit({ type: "session", sessionId: this.id, snapshot: this.snapshot() });
+      } else if (this.status === "running") {
+        const pendingGoalBoardAgent = [...this.agents.values()].find((entry) => !entry.draining && this.goalBoardNeedsAttention(entry));
+        if (pendingGoalBoardAgent) {
+          this.scheduleAgentDrain(pendingGoalBoardAgent.preset.id, true);
+        } else if ([...this.agents.values()].every((entry) => !entry.draining && !hasPendingDigest(entry.pendingDigest))) {
+          this.status = "idle";
+          this.persistSession();
+          this.emit({ type: "session", sessionId: this.id, snapshot: this.snapshot() });
+        }
       }
     }
   }
@@ -672,6 +743,8 @@ export class LiveSession {
     }
     agent.snapshot.turnCount += 1;
     agent.snapshot.lastConsumedSequence = Math.max(Number(agent.snapshot.lastConsumedSequence || 0), consumedSequence);
+    const changedSubgoalIds = this.applySubgoalUpdates(agentId, result.subgoalUpdates);
+    agent.snapshot.lastSeenSubgoalRevision = this.subgoalRevision;
     agent.snapshot.completion = result.completion;
     agent.snapshot.workingNotes = result.workingNotes;
     agent.snapshot.teamMessage = result.teamMessage;
@@ -714,6 +787,7 @@ export class LiveSession {
       turnCount: agent.snapshot.turnCount,
       shouldReply: result.shouldReply,
       completion: result.completion,
+      ...(changedSubgoalIds.length > 0 ? { subgoalIds: changedSubgoalIds } : {}),
       ...(effectiveTargetAgentIds.length === 1 ? { targetAgentId: effectiveTargetAgentIds[0] } : {}),
       ...(effectiveTargetAgentIds.length > 0 ? { targetAgentIds: effectiveTargetAgentIds } : {}),
     };
@@ -724,6 +798,10 @@ export class LiveSession {
     if (result.shouldReply && result.teamMessage) {
       this.status = "running";
       this.publish(agent.preset.name, agent.preset.publishChannel, result.teamMessage, eventMetadata);
+    }
+    if (changedSubgoalIds.length > 0) {
+      this.status = "running";
+      this.pingGoalBoardOwners();
     }
   }
 
@@ -791,6 +869,172 @@ export class LiveSession {
     writeSessionSnapshot(this.files, this.snapshot());
   }
 
+  private resetGoalBoard(goal: string, actor: string): void {
+    this.subgoalRevision = Math.max(0, this.subgoalRevision) + 1;
+    const timestamp = nowIso();
+    this.subgoals = [createSeedSubgoal(goal, this.subgoalRevision, timestamp)];
+    for (const agent of this.agents.values()) {
+      agent.snapshot.lastSeenSubgoalRevision = 0;
+      this.persistAgent(agent.preset.id);
+    }
+    this.updatedAt = timestamp;
+    this.persistSession();
+  }
+
+  private nextSubgoalId(): string {
+    let maxId = 0;
+    for (const subgoal of this.subgoals) {
+      const match = String(subgoal.id ?? "").match(/^sg-(\d+)$/);
+      const parsed = Number(match?.[1] || 0);
+      if (parsed > maxId) {
+        maxId = parsed;
+      }
+    }
+    return `sg-${maxId + 1}`;
+  }
+
+  private defaultAssigneeForStage(stage: SubgoalStage): string | null {
+    if (stage === "open" || stage === "researching" || stage === "done") {
+      return null;
+    }
+    const match = this.config.agents.find((agent) => Array.isArray(agent.policy?.ownedStages) && agent.policy.ownedStages.includes(stage));
+    return match?.id ?? null;
+  }
+
+  private sanitizeSubgoalUpdate(update: SubgoalUpdate): SubgoalUpdate | null {
+    if (!update || typeof update !== "object") {
+      return null;
+    }
+    const id = String(update.id ?? "").trim() || null;
+    const title = String(update.title ?? "").trim() || null;
+    const summary = String(update.summary ?? "").trim() || null;
+    const stage = update.stage ? normalizeSubgoalStage(update.stage, "researching") : null;
+    const assigneeAgentId = String(update.assigneeAgentId ?? "").trim() || null;
+    if (!id && !title && !summary && !stage && !assigneeAgentId) {
+      return null;
+    }
+    return {
+      id,
+      title,
+      summary,
+      stage,
+      assigneeAgentId,
+    };
+  }
+
+  private applySubgoalUpdates(agentId: string, updates: SubgoalUpdate[] | undefined): string[] {
+    const normalized = Array.isArray(updates) ? updates.map((update) => this.sanitizeSubgoalUpdate(update)).filter(Boolean) as SubgoalUpdate[] : [];
+    if (normalized.length === 0) {
+      return [];
+    }
+
+    const changedIds = new Set<string>();
+    for (const update of normalized.slice(0, 8)) {
+      const existingIndex = update.id ? this.subgoals.findIndex((subgoal) => subgoal.id === update.id) : -1;
+      const timestamp = nowIso();
+      this.subgoalRevision += 1;
+      if (existingIndex >= 0) {
+        const existing = this.subgoals[existingIndex];
+        const stage = update.stage ? normalizeSubgoalStage(update.stage, existing.stage) : existing.stage;
+        const assigneeAgentId = update.assigneeAgentId != null
+          ? (update.assigneeAgentId && this.agents.has(update.assigneeAgentId) ? update.assigneeAgentId : null)
+          : (stage !== existing.stage ? this.defaultAssigneeForStage(stage) : existing.assigneeAgentId);
+        this.subgoals[existingIndex] = {
+          ...existing,
+          title: update.title || existing.title,
+          summary: update.summary || existing.summary,
+          stage,
+          assigneeAgentId,
+          updatedAt: timestamp,
+          updatedBy: agentId,
+          revision: this.subgoalRevision,
+        };
+        changedIds.add(existing.id);
+        continue;
+      }
+
+      const stage = normalizeSubgoalStage(update.stage, "researching");
+      const id = this.nextSubgoalId();
+      this.subgoals.push({
+        id,
+        title: update.title || `Subgoal ${id}`,
+        summary: update.summary || "No summary provided.",
+        stage,
+        assigneeAgentId: update.assigneeAgentId && this.agents.has(update.assigneeAgentId)
+          ? update.assigneeAgentId
+          : this.defaultAssigneeForStage(stage),
+        updatedAt: timestamp,
+        updatedBy: agentId,
+        revision: this.subgoalRevision,
+      });
+      changedIds.add(id);
+    }
+
+    this.subgoals = [...this.subgoals].sort((left, right) => {
+      if (left.stage === right.stage) {
+        return left.id.localeCompare(right.id);
+      }
+      return left.revision - right.revision;
+    });
+    this.updatedAt = nowIso();
+    this.persistSession();
+    return [...changedIds];
+  }
+
+  private actionableSubgoalsForAgent(agent: RuntimeAgent): SessionSubgoal[] {
+    const ownedStages = Array.isArray(agent.preset.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
+    if (ownedStages.length === 0) {
+      return [];
+    }
+    return this.subgoals.filter((subgoal) => {
+      if (!ownedStages.includes(subgoal.stage)) {
+        return false;
+      }
+      if (subgoal.assigneeAgentId && subgoal.assigneeAgentId !== agent.preset.id) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  private goalBoardNeedsAttention(agent: RuntimeAgent): boolean {
+    if (this.actionableSubgoalsForAgent(agent).length === 0) {
+      return false;
+    }
+    return Number(agent.snapshot.lastSeenSubgoalRevision || 0) < this.subgoalRevision;
+  }
+
+  private buildGoalBoardSummary(agent: RuntimeAgent): string {
+    if (this.subgoals.length === 0) {
+      return "(no subgoals yet)";
+    }
+    const lines = this.subgoals.map((subgoal) => {
+      const assignee = subgoal.assigneeAgentId ? ` assignee=${subgoal.assigneeAgentId}` : "";
+      const focus = this.actionableSubgoalsForAgent(agent).some((item) => item.id === subgoal.id) ? " focus=true" : "";
+      return `- ${subgoal.id} [${subgoal.stage}]${assignee}${focus}: ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}`;
+    });
+    return lines.join("\n");
+  }
+
+  private buildActionableSubgoalSummary(agent: RuntimeAgent): string {
+    const actionable = this.actionableSubgoalsForAgent(agent);
+    if (actionable.length === 0) {
+      return "(none)";
+    }
+    return actionable
+      .map((subgoal) => `- ${subgoal.id} [${subgoal.stage}] ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}`)
+      .join("\n");
+  }
+
+  private pingGoalBoardOwners(): void {
+    for (const agent of this.agents.values()) {
+      if (!this.goalBoardNeedsAttention(agent) || agent.draining || agent.snapshot.status === "starting" || this.status === "stopped") {
+        continue;
+      }
+      this.scheduleAgentDrain(agent.preset.id, true);
+    }
+  }
+
   private latestGoalSequence(): number {
     for (let index = this.recentEvents.length - 1; index >= 0; index -= 1) {
       if (this.isGoalEvent(this.recentEvents[index])) {
@@ -818,30 +1062,16 @@ export class LiveSession {
     return this.eventsSinceGoalForChannels(channels).length > 0;
   }
 
-  private meetsActivationPolicy(agent: RuntimeAgent): boolean {
-    const policy = agent.preset.policy;
-    if (!policy || policy.activationChannels.length === 0) {
-      return true;
-    }
-    const relevantEvents = this.eventsSinceGoalForChannels(policy.activationChannels);
-    const enoughEvents = relevantEvents.length >= Math.max(0, Number(policy.activationMinEvents || 0));
-    const enoughSenders = new Set(relevantEvents.map((event) => event.sender)).size >= Math.max(0, Number(policy.activationMinUniqueSenders || 0));
-    return enoughEvents && enoughSenders;
+  private discoveryChannels(): Set<SessionChannel> {
+    return new Set(
+      this.config.agents
+        .filter((entry) => Array.isArray(entry.policy?.ownedStages) && (entry.policy.ownedStages.includes("open") || entry.policy.ownedStages.includes("researching")))
+        .map((entry) => entry.publishChannel),
+    );
   }
 
-  private hasPeerContext(agent: RuntimeAgent): boolean {
-    const channels = Array.isArray(agent.preset.policy.peerContextChannels) ? agent.preset.policy.peerContextChannels : [];
-    if (channels.length === 0) {
-      return true;
-    }
-    const latestGoalSequence = this.latestGoalSequence();
-    return this.recentEvents.some(
-      (event) =>
-        event.sequence > latestGoalSequence &&
-        event.sender !== "system" &&
-        event.sender !== agent.preset.name &&
-        channels.includes(event.channel),
-    );
+  private meetsActivationPolicy(agent: RuntimeAgent): boolean {
+    return this.goalBoardNeedsAttention(agent);
   }
 
   private shouldIgnoreCompletedAgent(agent: RuntimeAgent, event: SessionEvent): boolean {
@@ -855,7 +1085,7 @@ export class LiveSession {
     if (this.isGoalEvent(event) || this.isOperatorEvent(event)) {
       return false;
     }
-    return !agent.preset.policy.doneReopenChannels.includes(event.channel);
+    return !this.goalBoardNeedsAttention(agent);
   }
 
   private wasInterruptedSnapshot(snapshot: AgentSnapshot): boolean {
@@ -870,27 +1100,6 @@ export class LiveSession {
     }
     const notes = Array.isArray(snapshot.workingNotes) ? snapshot.workingNotes.join(" ") : "";
     return compactWhitespace(notes).toLowerCase().includes("stopped");
-  }
-
-  private agentReplyCountSinceGoal(agent: RuntimeAgent): number {
-    const latestGoalSequence = this.latestGoalSequence();
-    return this.recentEvents.filter(
-      (event) =>
-        event.sender === agent.preset.name &&
-        event.channel === agent.preset.publishChannel &&
-        event.sequence > latestGoalSequence,
-    ).length;
-  }
-
-  private shouldMuteFollowup(agent: RuntimeAgent, event: SessionEvent): boolean {
-    const policy = agent.preset.policy;
-    if (!policy.muteFollowupChannels.includes(event.channel)) {
-      return false;
-    }
-    if (this.hasChannelActivitySinceGoal(policy.muteOnChannelActivity)) {
-      return true;
-    }
-    return this.agentReplyCountSinceGoal(agent) >= 1;
   }
 
   private currentTurnHasTargetedRequest(agent: RuntimeAgent): boolean {
@@ -917,18 +1126,7 @@ export class LiveSession {
   }
 
   private applyPeerContextTargetDeferral(agent: RuntimeAgent, targetAgentIds: string[]): string[] {
-    const deferredTargets = new Set(
-      (Array.isArray(agent.preset.policy.deferTargetAgentIdsUntilPeerContext) ? agent.preset.policy.deferTargetAgentIdsUntilPeerContext : [])
-        .map((value) => String(value ?? "").trim())
-        .filter(Boolean),
-    );
-    if (deferredTargets.size === 0) {
-      return targetAgentIds;
-    }
-    if (this.hasPeerContext(agent) || this.currentTurnHasTargetedRequest(agent) || this.hasOperatorOverride(agent)) {
-      return targetAgentIds;
-    }
-    return targetAgentIds.filter((value) => !deferredTargets.has(value));
+    return targetAgentIds;
   }
 
   private shouldForceBroadcastOnFirstTurn(agent: RuntimeAgent): boolean {
@@ -942,7 +1140,13 @@ export class LiveSession {
   }
 
   private shouldDeferAgent(agent: RuntimeAgent): boolean {
-    return !this.hasOperatorOverride(agent) && !this.meetsActivationPolicy(agent);
+    if (this.hasOperatorOverride(agent) || this.currentTurnHasTargetedRequest(agent)) {
+      return false;
+    }
+    if (hasPendingDigest(agent.pendingDigest)) {
+      return false;
+    }
+    return !this.meetsActivationPolicy(agent);
   }
 
   private transcriptEventLimit(agent: RuntimeAgent): number {

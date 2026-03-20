@@ -2,6 +2,16 @@ export type SessionChannel = string;
 export type AgentStatus = "starting" | "ready" | "running" | "waiting-input" | "idle" | "error" | "stopped";
 export type SessionStatus = "starting" | "running" | "idle" | "stopping" | "stopped" | "error";
 export type AgentHistoryKind = "notes" | "messages" | "prompts" | "stdout" | "stderr" | "errors";
+export const SUBGOAL_STAGES = [
+  "open",
+  "researching",
+  "ready_for_build",
+  "building",
+  "ready_for_review",
+  "done",
+  "blocked",
+] as const;
+export type SubgoalStage = (typeof SUBGOAL_STAGES)[number];
 
 export interface TokenUsage {
   inputTokens: number;
@@ -11,17 +21,8 @@ export interface TokenUsage {
 
 export interface AgentPolicy {
   promptGuidance: string[];
-  activationChannels: SessionChannel[];
-  activationMinEvents: number;
-  activationMinUniqueSenders: number;
-  peerContextChannels: SessionChannel[];
-  doneReopenChannels: SessionChannel[];
+  ownedStages: SubgoalStage[];
   allowedTargetAgentIds: string[];
-  deferTargetAgentIdsUntilPeerContext: string[];
-  observeTargetedChannels: SessionChannel[];
-  targetedOnlyChannels: SessionChannel[];
-  muteFollowupChannels: SessionChannel[];
-  muteOnChannelActivity: SessionChannel[];
   forceBroadcastOnFirstTurn: boolean;
 }
 
@@ -81,6 +82,25 @@ export interface SessionEvent {
   metadata?: Record<string, unknown>;
 }
 
+export interface SessionSubgoal {
+  id: string;
+  title: string;
+  summary: string;
+  stage: SubgoalStage;
+  assigneeAgentId: string | null;
+  updatedAt: string;
+  updatedBy: string;
+  revision: number;
+}
+
+export interface SubgoalUpdate {
+  id?: string | null;
+  title?: string | null;
+  summary?: string | null;
+  stage?: SubgoalStage | null;
+  assigneeAgentId?: string | null;
+}
+
 export interface AgentHistoryEntry {
   id: string;
   timestamp: string;
@@ -96,6 +116,7 @@ export interface AgentTurnResult {
   teamMessage: string;
   targetAgentId?: string | null;
   targetAgentIds?: string[] | null;
+  subgoalUpdates?: SubgoalUpdate[];
   completion: "continue" | "done" | "blocked";
   rawText: string;
 }
@@ -109,6 +130,7 @@ export interface AgentSnapshot {
   status: AgentStatus;
   turnCount: number;
   lastConsumedSequence: number;
+  lastSeenSubgoalRevision: number;
   pendingSignals: number;
   waitingForInput: boolean;
   lastPrompt: string;
@@ -134,10 +156,12 @@ export interface SessionSnapshot {
   updatedAt: string;
   status: SessionStatus;
   eventCount: number;
+  subgoalRevision: number;
   agentCount: number;
   selectedAgentId: string | null;
   agents: AgentSnapshot[];
   recentEvents: SessionEvent[];
+  subgoals: SessionSubgoal[];
   totalUsage: TokenUsage;
 }
 

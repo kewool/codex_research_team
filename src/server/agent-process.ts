@@ -152,6 +152,7 @@ export class CodexAgentProcess {
       ...workspaceGuardrailLines(),
       ...routingGuidanceLines(this.agent, this.config.agents),
       "- Other agents and the operator will send more messages later in this same session.",
+      "- This runtime uses a goal board with subgoals and stage transitions. Do your work through the goal board, not only through free-form team chat.",
       "- Your outputs are public. Do not reveal private chain-of-thought.",
       "- Runtime note: each turn is executed statelessly from the local transcript, so do not rely on hidden memory from prior Codex turns.",
       "- When you receive a TURN prompt, follow its JSON protocol exactly.",
@@ -212,6 +213,8 @@ export class CodexAgentProcess {
       ...workspaceGuardrailLines(),
       ...routingGuidanceLines(this.agent, this.config.agents),
       "- Only give public working notes. Do not expose hidden reasoning.",
+      "- The goal board is the source of truth for progress. Use subgoalUpdates to create, refine, assign, or advance subgoals whenever the state of the work has changed.",
+      "- Prefer updating the relevant subgoal over merely describing progress in free text.",
       "- Reply only when you add materially new evidence, a concrete contradiction, or a decision-changing action.",
       "- Do not reply just to agree, restate, lightly refine, or say that you support a prior point.",
       "- If the primary trigger is a targeted message from a specific agent and your response is mainly for that sender, target your reply back to that sender by default.",
@@ -223,9 +226,10 @@ export class CodexAgentProcess {
       "- Use completion=\"done\" only when your current branch looks genuinely exhausted until a new goal, operator instruction, implementation change, or targeted request gives you new information.",
       "- When one specific agent should act next, use targetAgentId instead of relying only on broadcast.",
       "- When two or more specific agents should act next, use targetAgentIds for a multi-target handoff.",
+      "- Use subgoal stage meanings consistently: open/researching for discovery, ready_for_build when research is sufficient for routing, building for active implementation, ready_for_review when code is ready to audit, done when accepted, blocked when a real blocker prevents progress.",
       "Return exactly this shape between the XML tags:",
       "<codex_team-response>",
-      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"completion":"continue"}',
+      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"id":"sg-1","title":"short subgoal title","summary":"what changed","stage":"researching","assigneeAgentId":null}],"completion":"continue"}',
       "</codex_team-response>",
       `Finish with this token on its own line: ${token}`,
     ].join("\n\n");
@@ -563,12 +567,24 @@ function normalizeParsedTurnResult(parsed: Partial<AgentTurnResult> & { teamMess
     : singleTargetAgentId
       ? [singleTargetAgentId]
       : [];
+  const subgoalUpdates = Array.isArray(parsed.subgoalUpdates)
+    ? parsed.subgoalUpdates
+        .filter((item) => item && typeof item === "object")
+        .map((item) => ({
+          id: String((item as Record<string, unknown>).id ?? "").trim() || null,
+          title: String((item as Record<string, unknown>).title ?? "").trim() || null,
+          summary: String((item as Record<string, unknown>).summary ?? "").trim() || null,
+          stage: String((item as Record<string, unknown>).stage ?? "").trim() || null,
+          assigneeAgentId: String((item as Record<string, unknown>).assigneeAgentId ?? "").trim() || null,
+        }))
+    : [];
   return {
     shouldReply: Boolean(parsed.shouldReply) && Boolean(parsed.teamMessage),
     workingNotes: notes.length > 0 ? notes : ["No public working notes were provided."],
     teamMessage: String(parsed.teamMessage ?? "").trim(),
     targetAgentId: targetAgentIds.length === 1 ? targetAgentIds[0] : null,
     targetAgentIds,
+    subgoalUpdates,
     completion,
     rawText,
   };
@@ -595,6 +611,7 @@ export function parseAgentTurnResult(rawText: string): AgentTurnResult {
       teamMessage: "",
       targetAgentId: null,
       targetAgentIds: [],
+      subgoalUpdates: [],
       completion: "continue",
       rawText,
     };
@@ -622,6 +639,7 @@ export function parseAgentTurnResult(rawText: string): AgentTurnResult {
       teamMessage: "",
       targetAgentId: null,
       targetAgentIds: [],
+      subgoalUpdates: [],
       completion: "continue",
       rawText,
     };

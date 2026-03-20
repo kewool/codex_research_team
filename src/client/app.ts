@@ -20,6 +20,7 @@ const FEED_PAGE_SIZE = 40;
 const MAX_VISIBLE_FEED_ITEMS = 120;
 const DEFAULT_HISTORY_PAGE_SIZE = 20;
 const DEFAULT_MAX_VISIBLE_HISTORY_ITEMS = 80;
+const SUBGOAL_STAGES = ["open", "researching", "ready_for_build", "building", "ready_for_review", "done", "blocked"];
 let renderQueued = false;
 type ScrollAnchorMode = "append" | "prepend";
 type ScrollAnchorSnapshot = {
@@ -909,6 +910,19 @@ function renderOptionCheckboxPicker(attributeName: string, options: string[], se
   `;
 }
 
+function renderStageCheckboxPicker(attributeName: string, index: number, selectedValues: string[]): string {
+  return `
+    <div class="channel-picker">
+      ${SUBGOAL_STAGES.map((stage) => `
+        <label class="channel-chip">
+          <input type="checkbox" ${attributeName}="${index}" value="${escapeHtml(stage)}" ${selectedValues.includes(stage) ? "checked" : ""} />
+          <span>${escapeHtml(stage)}</span>
+        </label>
+      `).join("")}
+    </div>
+  `;
+}
+
 function parseLineListInput(value: string): string[] {
   return [...new Set(
     String(value || "")
@@ -1037,64 +1051,20 @@ function renderSettingsPage(): string {
           ${renderChannelCheckboxPicker("data-agent-listen-option", index, channels, Array.isArray(agent.listenChannels) ? agent.listenChannels : [])}
         </label>
         <label>
-          ${renderLabel("Done Reopen Channels", "Channels that can reopen an agent after it previously marked itself done.")}
-          ${renderChannelCheckboxPicker("data-agent-reopen-option", index, channels, Array.isArray(agent.policy?.doneReopenChannels) ? agent.policy.doneReopenChannels : [])}
+          ${renderLabel("Owned Goal Stages", "Subgoal stages this agent is expected to advance. The goal board, not message counts, is the main trigger for work.")}
+          ${renderStageCheckboxPicker("data-agent-owned-stage-option", index, Array.isArray(agent.policy?.ownedStages) ? agent.policy.ownedStages : [])}
         </label>
       </div>
       <div class="two-col-grid">
-        <label>
-          ${renderLabel("Observe Targeted Channels", "Targeted events on these channels stay visible enough to wake this agent as an observer, even if the message was sent to someone else.")}
-          ${renderChannelCheckboxPicker("data-agent-observe-targeted-option", index, channels, Array.isArray(agent.policy?.observeTargetedChannels) ? agent.policy.observeTargetedChannels : [])}
-        </label>
         <label>
           ${renderLabel("Allowed Target Agents", "Server-side allowlist for direct targets. Any disallowed target is stripped before publish.")}
           ${renderAgentCheckboxPicker("data-agent-target-allow-option", index, agentIds.filter((value: string) => value !== String(agent.id || "").trim()), Array.isArray(agent.policy?.allowedTargetAgentIds) ? agent.policy.allowedTargetAgentIds : [])}
         </label>
-      </div>
-      <div class="two-col-grid">
         <label>
-          ${renderLabel("Activation Channels", "Channels used when deciding whether this agent has enough context to start working instead of waiting.")}
-          ${renderChannelCheckboxPicker("data-agent-activation-option", index, channels, Array.isArray(agent.policy?.activationChannels) ? agent.policy.activationChannels : [])}
-        </label>
-        <div class="two-col-grid">
-          <label>
-            ${renderLabel("Activation Min Events", "Minimum number of matching events required before the activation gate opens. Set 0 to disable the count gate.")}
-            <input data-agent-activation-events="${index}" type="number" min="0" value="${escapeHtml(String(agent.policy?.activationMinEvents ?? 0))}" />
-          </label>
-          <label>
-            ${renderLabel("Activation Min Senders", "Minimum number of unique senders required before the activation gate opens. Set 0 to disable the sender gate.")}
-            <input data-agent-activation-senders="${index}" type="number" min="0" value="${escapeHtml(String(agent.policy?.activationMinUniqueSenders ?? 0))}" />
-          </label>
-        </div>
-      </div>
-      <div class="two-col-grid">
-        <label>
-          ${renderLabel("Peer Context Channels", "Channels this agent must see from another sender before deferred targets become available. This avoids escalating too early.")}
-          ${renderChannelCheckboxPicker("data-agent-peer-context-option", index, channels, Array.isArray(agent.policy?.peerContextChannels) ? agent.policy.peerContextChannels : [])}
-        </label>
-        <label>
-          ${renderLabel("Defer Target Agents Until Peer Context", "Targets here are stripped until the agent has seen peer context on the channels above, unless the operator or a direct request bypasses the rule.")}
-          ${renderAgentCheckboxPicker("data-agent-defer-target-option", index, agentIds.filter((value: string) => value !== String(agent.id || "").trim()), Array.isArray(agent.policy?.deferTargetAgentIdsUntilPeerContext) ? agent.policy.deferTargetAgentIdsUntilPeerContext : [])}
+          ${renderLabel("Model", "Optional per-agent model override. Leave empty to use the runtime default.")}
+          ${renderModelSelect(`data-agent-model="${index}"`, options, agent.model, "Use default model")}
         </label>
       </div>
-      <div class="two-col-grid">
-        <label>
-          ${renderLabel("Mute Follow-up Channels", "Channels this agent should stop reacting to once its branch has already progressed far enough.")}
-          ${renderChannelCheckboxPicker("data-agent-mute-followup-option", index, channels, Array.isArray(agent.policy?.muteFollowupChannels) ? agent.policy.muteFollowupChannels : [])}
-        </label>
-        <label>
-          ${renderLabel("Mute After Channel Activity", "If activity appears on any selected channel, follow-up channels above are muted more aggressively.")}
-          ${renderChannelCheckboxPicker("data-agent-mute-activity-option", index, channels, Array.isArray(agent.policy?.muteOnChannelActivity) ? agent.policy.muteOnChannelActivity : [])}
-        </label>
-      </div>
-      <label>
-        ${renderLabel("Targeted-only Channels", "Broadcast traffic on these channels will not wake this agent. Only direct targeted events on these channels are routed in.")}
-        ${renderChannelCheckboxPicker("data-agent-targeted-only-option", index, channels, Array.isArray(agent.policy?.targetedOnlyChannels) ? agent.policy.targetedOnlyChannels : [])}
-      </label>
-      <label>
-        ${renderLabel("Model", "Optional per-agent model override. Leave empty to use the runtime default.")}
-        ${renderModelSelect(`data-agent-model="${index}"`, options, agent.model, "Use default model")}
-      </label>
       <label class="check-line">
         <input data-agent-force-broadcast="${index}" type="checkbox" ${agent.policy?.forceBroadcastOnFirstTurn ? "checked" : ""} />
         <span>Force broadcast on first turn ${renderHint("Prevents the first team message from being narrowly targeted. Useful when you want the room to see the first take before routing gets more selective.")}</span>
@@ -1593,6 +1563,28 @@ function renderSessionFeed(sessionId: string): string {
   return `${body}${renderListFooter(cache, "No events yet.")}`;
 }
 
+function renderSubgoalBoard(session: AnyObject): string {
+  const subgoals = Array.isArray(session.subgoals) ? session.subgoals : [];
+  if (subgoals.length === 0) {
+    return `<p class="muted">No subgoals yet.</p>`;
+  }
+  return `
+    <div class="subgoal-board" data-subgoal-count="${escapeHtml(String(subgoals.length))}">
+      ${subgoals.map((subgoal: AnyObject) => `
+        <article class="subgoal-card" data-stage="${escapeHtml(String(subgoal.stage || "").toLowerCase())}">
+          <header>
+            <strong>${escapeHtml(subgoal.id || "-")}</strong>
+            <span class="status-pill ${escapeHtml(String(subgoal.stage || "open"))}">${escapeHtml(subgoal.stage || "open")}</span>
+          </header>
+          <h4>${escapeHtml(subgoal.title || "Untitled subgoal")}</h4>
+          <p>${escapeHtml(subgoal.summary || "-")}</p>
+          <small>${escapeHtml(subgoal.assigneeAgentId ? `assignee ${subgoal.assigneeAgentId}` : "shared")} · rev ${escapeHtml(String(subgoal.revision || 0))}</small>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
 function renderAgentTabContent(sessionId: string, agent: AnyObject, tab: string): string {
   if (tab === "stdout") {
     return `
@@ -1658,12 +1650,23 @@ function renderSessionPage(): string {
     </section>
     <section class="summary-row">
       <article class="metric-card panel"><span class="metric-label">Events</span><strong>${escapeHtml(String(session.eventCount))}</strong></article>
+      <article class="metric-card panel"><span class="metric-label">Subgoals</span><strong>${escapeHtml(String((session.subgoals || []).length))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Waiting Input</span><strong>${escapeHtml(String(waiting))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Errors</span><strong>${escapeHtml(String(errors))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Completed Agents</span><strong>${escapeHtml(String(done))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Input Tokens</span><strong>${escapeHtml(formatTokenCount(tokenValue(session.totalUsage, "inputTokens")))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Cached Tokens</span><strong>${escapeHtml(formatTokenCount(tokenValue(session.totalUsage, "cachedInputTokens")))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Output Tokens</span><strong>${escapeHtml(formatTokenCount(tokenValue(session.totalUsage, "outputTokens")))}</strong></article>
+    </section>
+    <section class="panel goal-board-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Progress</p>
+          <h3>Goal Board</h3>
+        </div>
+        <span class="status-pill idle">rev ${escapeHtml(String(session.subgoalRevision || 0))}</span>
+      </div>
+      ${renderSubgoalBoard(session)}
     </section>
     <section class="panel command-deck">
       <div class="section-head">
@@ -1795,6 +1798,12 @@ function renderFeedItem(event: AnyObject): string {
       : [];
   if (targetAgentIds.length > 0) {
     metaBits.push(`target ${targetAgentIds.join(", ")}`);
+  }
+  const subgoalIds = Array.isArray(meta.subgoalIds)
+    ? meta.subgoalIds.map((value: unknown) => String(value ?? "").trim()).filter(Boolean)
+    : [];
+  if (subgoalIds.length > 0) {
+    metaBits.push(`subgoals ${subgoalIds.join(", ")}`);
   }
   if (meta.directInput) {
     metaBits.push("direct input");
@@ -2002,14 +2011,8 @@ function wireSettingsActions(): void {
         model: null,
         policy: {
           promptGuidance: [],
-          activationChannels: [],
-          activationMinEvents: 0,
-          activationMinUniqueSenders: 0,
-          doneReopenChannels: [],
+          ownedStages: [],
           allowedTargetAgentIds: [],
-          observeTargetedChannels: [],
-          muteFollowupChannels: [],
-          muteOnChannelActivity: [],
           forceBroadcastOnFirstTurn: false,
         },
       });
@@ -2135,48 +2138,13 @@ function gatherRuntimeTeamConfig(): AnyObject {
       .map((input) => input.value.trim())
       .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
       .filter(Boolean);
-    const activationChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-activation-option]'))
+    const ownedStages = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-owned-stage-option]'))
       .filter((input) => input.checked)
       .map((input) => input.value.trim())
-      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
-      .filter(Boolean);
-    const peerContextChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-peer-context-option]'))
-      .filter((input) => input.checked)
-      .map((input) => input.value.trim())
-      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
-      .filter(Boolean);
-    const doneReopenChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-reopen-option]'))
-      .filter((input) => input.checked)
-      .map((input) => input.value.trim())
-      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
       .filter(Boolean);
     const allowedTargetAgentIds = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-target-allow-option]'))
       .filter((input) => input.checked)
       .map((input) => input.value.trim())
-      .filter(Boolean);
-    const deferTargetAgentIdsUntilPeerContext = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-defer-target-option]'))
-      .filter((input) => input.checked)
-      .map((input) => input.value.trim())
-      .filter(Boolean);
-    const observeTargetedChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-observe-targeted-option]'))
-      .filter((input) => input.checked)
-      .map((input) => input.value.trim())
-      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
-      .filter(Boolean);
-    const targetedOnlyChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-targeted-only-option]'))
-      .filter((input) => input.checked)
-      .map((input) => input.value.trim())
-      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
-      .filter(Boolean);
-    const muteFollowupChannels = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-mute-followup-option]'))
-      .filter((input) => input.checked)
-      .map((input) => input.value.trim())
-      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
-      .filter(Boolean);
-    const muteOnChannelActivity = Array.from(row.querySelectorAll<HTMLInputElement>('[data-agent-mute-activity-option]'))
-      .filter((input) => input.checked)
-      .map((input) => input.value.trim())
-      .map((value) => remapSemanticChannel(value, previousDefaults, current.defaults))
       .filter(Boolean);
     return {
       id: name.replace(/[^a-zA-Z0-9_]+/g, "_").toLowerCase(),
@@ -2188,17 +2156,8 @@ function gatherRuntimeTeamConfig(): AnyObject {
       model,
       policy: {
         promptGuidance: parseLineListInput((row.querySelector("[data-agent-guidance]") as HTMLTextAreaElement)?.value || ""),
-        activationChannels,
-        activationMinEvents: Number((row.querySelector("[data-agent-activation-events]") as HTMLInputElement)?.value || "0") || 0,
-        activationMinUniqueSenders: Number((row.querySelector("[data-agent-activation-senders]") as HTMLInputElement)?.value || "0") || 0,
-        peerContextChannels,
-        doneReopenChannels,
+        ownedStages,
         allowedTargetAgentIds,
-        deferTargetAgentIdsUntilPeerContext,
-        observeTargetedChannels,
-        targetedOnlyChannels,
-        muteFollowupChannels,
-        muteOnChannelActivity,
         forceBroadcastOnFirstTurn: Boolean((row.querySelector("[data-agent-force-broadcast]") as HTMLInputElement)?.checked),
       },
     };
