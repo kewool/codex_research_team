@@ -327,6 +327,14 @@ function reasoningEffortOptions(config: AnyObject): string[] {
   return [...values];
 }
 
+function tailClientText(value: unknown, maxChars = 12000): string {
+  const text = String(value ?? "");
+  if (text.length <= maxChars) {
+    return text;
+  }
+  return text.slice(text.length - maxChars);
+}
+
 function ensureTerminalRow(lines: string[], row: number): void {
   while (lines.length <= row) {
     lines.push("");
@@ -542,12 +550,13 @@ function bindSessionStream(): void {
     }
     if (payload.type === "stream" && payload.agentId && payload.stream) {
       const kind = payload.stream === "stderr" ? "stderr" : "stdout";
-      prependLiveHistory(sessionId, payload.agentId, kind, String(payload.text || ""));
+      const text = String(payload.text || "");
+      prependLiveHistory(sessionId, payload.agentId, kind, text);
+      appendAgentStreamTail(sessionId, payload.agentId, kind, text);
       if (
         state.route.name === "session" &&
         state.route.sessionId === sessionId &&
-        state.selectedAgentId === payload.agentId &&
-        historyKindForTab(currentAgentTab()) === kind
+        state.selectedAgentId === payload.agentId
       ) {
         scheduleRender();
       }
@@ -1489,6 +1498,21 @@ function prependLiveHistory(sessionId: string, agentId: string, kind: string, te
   cache.loaded = true;
   cache.hasMore = cache.hasMore || Boolean(cache.nextBefore) || cache.items.length >= maxVisibleHistoryItems(kind);
   refreshPageCursor(cache);
+}
+
+function appendAgentStreamTail(sessionId: string, agentId: string, kind: "stdout" | "stderr", text: string): void {
+  const sessions = (state.snapshot?.sessions as AnyObject[]) || [];
+  const session = sessions.find((item) => item.id === sessionId);
+  if (!session) {
+    return;
+  }
+  const agents = (session.agents as AnyObject[]) || [];
+  const agent = agents.find((entry) => entry.id === agentId);
+  if (!agent) {
+    return;
+  }
+  const field = kind === "stderr" ? "stderrTail" : "stdoutTail";
+  agent[field] = tailClientText(`${String(agent[field] || "")}${text}`);
 }
 
 function upsertAgentSnapshot(sessionId: string, nextAgent: AnyObject): void {
