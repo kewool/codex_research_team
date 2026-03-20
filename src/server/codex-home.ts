@@ -1,7 +1,7 @@
 // @ts-nocheck
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { AppConfig } from "../shared/types";
 import { ensureDir } from "./utils";
 
@@ -80,7 +80,7 @@ function renderTopLevelConfig(config: AppConfig): string[] {
   const lines: string[] = [];
   const model = String(config.defaults.model ?? "").trim();
   const reasoning = String(config.defaults.modelReasoningEffort ?? "").trim();
-  lines.push(`web_search = ${quoteTomlString(config.defaults.search ? "live" : "off")}`);
+  lines.push(`web_search = ${quoteTomlString(config.defaults.search ? "live" : "disabled")}`);
   if (model) {
     lines.push(`model = ${quoteTomlString(model)}`);
   }
@@ -115,6 +115,46 @@ export function effectiveCodexConfigPath(config: AppConfig): string {
   return join(effectiveCodexHomeDir(config), "config.toml");
 }
 
+function copyFileIfPresent(sourcePath: string, destinationPath: string): void {
+  if (!existsSync(sourcePath)) {
+    return;
+  }
+  ensureDir(dirname(destinationPath));
+  cpSync(sourcePath, destinationPath, { force: true });
+}
+
+function replaceDirectoryIfPresent(sourcePath: string, destinationPath: string): void {
+  if (!existsSync(sourcePath)) {
+    return;
+  }
+  try {
+    rmSync(destinationPath, { recursive: true, force: true });
+  } catch {
+    // ignore and retry via copy below
+  }
+  ensureDir(dirname(destinationPath));
+  cpSync(sourcePath, destinationPath, { recursive: true, force: true });
+}
+
+function syncProjectRuntimeAssets(homeDir: string): void {
+  const globalHomeDir = globalCodexHomeDir();
+  const mirroredFiles = [
+    "auth.json",
+    "cap_sid",
+    "version.json",
+    "models_cache.json",
+    "internal_storage.json",
+    ".codex-global-state.json",
+  ];
+
+  for (const fileName of mirroredFiles) {
+    copyFileIfPresent(join(globalHomeDir, fileName), join(homeDir, fileName));
+  }
+
+  replaceDirectoryIfPresent(join(globalHomeDir, "skills", ".system"), join(homeDir, "skills", ".system"));
+  replaceDirectoryIfPresent(join(globalHomeDir, "vendor_imports"), join(homeDir, "vendor_imports"));
+}
+
 export function syncProjectCodexHome(config: AppConfig): string {
   const homeDir = effectiveCodexHomeDir(config);
   if (config.defaults.codexHomeMode !== "project") {
@@ -122,6 +162,7 @@ export function syncProjectCodexHome(config: AppConfig): string {
   }
 
   ensureDir(homeDir);
+  syncProjectRuntimeAssets(homeDir);
   const configPath = join(homeDir, "config.toml");
   const globalConfigText = readText(join(globalCodexHomeDir(), "config.toml"));
   const existingConfigText = readText(configPath);

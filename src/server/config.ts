@@ -66,6 +66,46 @@ export function defaultListenChannels(defaults: AppDefaults): SessionChannel[] {
   return normalizeChannelList([defaults.goalChannel, defaults.operatorChannel]);
 }
 
+function defaultWorkspacePreset(root: string, workspacesDir: string): { name: string; path: string } {
+  const resolvedRoot = resolve(root);
+  const resolvedWorkspacesDir = resolve(workspacesDir || resolve(resolvedRoot, "workspaces"));
+  const defaultPath = resolve(resolvedWorkspacesDir, "default");
+  ensureDir(resolvedWorkspacesDir);
+  ensureDir(defaultPath);
+  return {
+    name: "default",
+    path: defaultPath,
+  };
+}
+
+function ensureWorkspaceDefaults(config: AppConfig, root = process.cwd()): AppConfig {
+  const resolvedWorkspacesDir = resolve(config.defaults.workspacesDir);
+  ensureDir(resolvedWorkspacesDir);
+  const normalizedWorkspaces = Array.isArray(config.workspaces)
+    ? config.workspaces
+        .map((workspace) => ({
+          name: String(workspace?.name ?? "").trim(),
+          path: resolve(String(workspace?.path ?? "").trim()),
+        }))
+        .filter((workspace) => workspace.name && workspace.path)
+    : [];
+
+  if (normalizedWorkspaces.length === 0) {
+    normalizedWorkspaces.push(defaultWorkspacePreset(root, resolvedWorkspacesDir));
+  } else {
+    for (const workspace of normalizedWorkspaces) {
+      ensureDir(workspace.path);
+    }
+  }
+
+  const defaultWorkspaceName = String(config.defaults.defaultWorkspaceName ?? "").trim();
+  config.workspaces = normalizedWorkspaces;
+  config.defaults.defaultWorkspaceName = normalizedWorkspaces.some((workspace) => workspace.name === defaultWorkspaceName)
+    ? defaultWorkspaceName
+    : normalizedWorkspaces[0]?.name ?? "default";
+  return config;
+}
+
 export function emptyAgentPolicy(): AgentPolicy {
   return {
     promptGuidance: [],
@@ -128,6 +168,9 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         promptGuidance: [
           "Explore independently and prioritize architecture options, constraints, assumptions, and concrete plans.",
           "Stay at the research and planning layer by default. Do not spend turns on line-by-line code review, file-by-file bug hunting, or detailed test edits unless the operator explicitly asks for that depth.",
+          "Treat the codebase as evidence, not as the main subject. Use it to confirm architecture, workflow, and product constraints, then return to the higher-level decision.",
+          "Do not turn your turn into a contract-audit or bug-audit report. If you discover a code-level defect, compress it into one short risk statement and hand it off instead of walking through files and functions.",
+          "Avoid long file-path, symbol, or implementation-detail enumerations. Focus on what the team should conclude, change in plan, or validate next.",
           "Prefer broadcast updates unless a specific agent clearly needs to act next.",
           "If another researcher should investigate a specific question next, target that researcher directly.",
           "Discuss with the other researchers before escalating to coordinator_1. Do not hand work to coordinator_1 until you have seen peer research for this goal, unless the operator explicitly tells you to do so.",
@@ -158,7 +201,10 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         ...emptyAgentPolicy(),
         promptGuidance: [
           "Explore independently and prioritize risks, tradeoffs, failure modes, and validation strategy.",
-          "Focus on requirements, evaluation criteria, data assumptions, and likely breakpoints rather than detailed code-review findings. If you notice a code-level issue, hand it off succinctly instead of spending the whole turn on file-level analysis.",
+          "Focus on requirements, evaluation criteria, data assumptions, and likely breakpoints rather than detailed code-review findings.",
+          "Treat code inspection as a way to confirm risk, not as the deliverable. If you notice a code-level defect, reduce it to one concise failure mode and hand it off instead of producing a deep audit.",
+          "Avoid long file-path, symbol, and function-level walkthroughs unless the operator explicitly asks for review depth.",
+          "Prioritize acceptance criteria, user-facing risk, reproducibility risk, and where the current direction is likely to fail.",
           "Prefer broadcast updates unless a specific agent clearly needs to act next.",
           "If another researcher should investigate a specific question next, target that researcher directly.",
           "Discuss with the other researchers before escalating to coordinator_1. Do not hand work to coordinator_1 until you have seen peer research for this goal, unless the operator explicitly tells you to do so.",
@@ -190,6 +236,9 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         promptGuidance: [
           "Explore independently and prioritize workflow design, handoff quality, evaluation plan, and operator impact.",
           "Avoid dropping into patch-level implementation review by default. Prefer system behavior, pipeline shape, tooling flow, and what the implementer or reviewer should validate next.",
+          "Do not spend turns cataloging code/schema/path defects in detail. Convert them into workflow or operator-facing contract risks and move back up a level.",
+          "Treat the repository as one input to the workflow analysis, not as the thing you are reviewing line by line.",
+          "When a low-level issue matters, summarize the impact on handoff quality or operator flow instead of reciting implementation details.",
           "Prefer broadcast updates unless a specific agent clearly needs to act next.",
           "If another researcher should investigate a specific question next, target that researcher directly.",
           "Discuss with the other researchers before escalating to coordinator_1. Do not hand work to coordinator_1 until you have seen peer research for this goal, unless the operator explicitly tells you to do so.",
@@ -281,7 +330,7 @@ export function createDefaultConfig(root = process.cwd()): AppConfig {
 
   const defaults: AppDefaults = {
     language: "ko",
-    defaultWorkspaceName: null,
+    defaultWorkspaceName: "default",
     historyTail: 14,
     serverHost: "127.0.0.1",
     serverPort: 4280,
@@ -304,18 +353,18 @@ export function createDefaultConfig(root = process.cwd()): AppConfig {
     dangerousBypass: true,
   };
 
-  return {
+  return ensureWorkspaceDefaults({
     defaults,
-    workspaces: [],
+    workspaces: [defaultWorkspacePreset(root, workspacesDir)],
     agents: defaultAgents(defaults),
-  };
+  }, root);
 }
 
 export function loadConfig(configPath = DEFAULT_CONFIG_PATH): AppConfig {
   const fallback = createDefaultConfig(process.cwd());
   const loaded = readJson<AppConfig>(configPath, fallback);
   const defaults = normalizeDefaults(loaded.defaults, fallback.defaults);
-  const merged: AppConfig = {
+  const merged = ensureWorkspaceDefaults({
     defaults,
     workspaces: Array.isArray(loaded.workspaces) ? loaded.workspaces : fallback.workspaces,
     agents: Array.isArray(loaded.agents) && loaded.agents.length > 0
@@ -335,7 +384,7 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): AppConfig {
           };
         })
       : defaultAgents(defaults),
-  };
+  }, process.cwd());
   if (merged.defaults.codexHomeMode === "project") {
     merged.defaults.codexHomeDir = resolve(merged.defaults.codexHomeDir);
   }

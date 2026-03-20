@@ -126,6 +126,14 @@ export class SessionManager {
     if (mergedDefaults.codexHomeMode === "project") {
       mergedDefaults.codexHomeDir = resolve(mergedDefaults.codexHomeDir);
     }
+    if (workspaces.length === 0) {
+      const defaultWorkspace = {
+        name: "default",
+        path: resolve(mergedDefaults.workspacesDir, "default"),
+      };
+      mkdirSync(defaultWorkspace.path, { recursive: true });
+      workspaces.push(defaultWorkspace);
+    }
     mergedDefaults.model = String(mergedDefaults.model ?? "").trim() || null;
     mergedDefaults.modelOptions = normalizeModelList(Array.isArray(mergedDefaults.modelOptions) ? mergedDefaults.modelOptions : [], mergedDefaults.model);
 

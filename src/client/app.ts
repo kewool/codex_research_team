@@ -742,7 +742,7 @@ function renderDashboardPage(): string {
       <div class="launch-form">
         <label>
           ${renderLabel("Goal", "Top-level objective for the session. This is broadcast into the room when the session starts.")}
-          <textarea id="launch-goal" placeholder="Example: analyze the sample audio in the workspace and plan an MR reconstruction workflow"></textarea>
+          <textarea id="launch-goal" placeholder="Example: inspect the workspace, identify the main problems, and propose an implementation plan"></textarea>
         </label>
         <div class="launch-grid">
           <label>
@@ -754,10 +754,12 @@ function renderDashboardPage(): string {
             <select id="launch-workspace">${workspaceOptions}</select>
           </label>
         </div>
-        <div class="inline-actions">
+        <div class="launch-actions">
           <button id="launch-session" class="primary">Start Session</button>
-          <button data-nav="/workspaces" class="ghost">Manage Workspaces</button>
-          <button data-nav="/settings" class="ghost">Manage Settings</button>
+          <div class="inline-actions launch-secondary-actions">
+            <button data-nav="/workspaces" class="ghost">Manage Workspaces</button>
+            <button data-nav="/settings" class="ghost">Manage Settings</button>
+          </div>
         </div>
       </div>
     </section>
@@ -1211,13 +1213,13 @@ function renderSettingsPage(): string {
       </section>
     </section>
     <section class="page-section">
-      <section class="panel">
+      <section class="panel agent-settings-panel">
         <div class="section-head">
           <div>
             <p class="eyebrow">Agents</p>
             <h3>Team Presets</h3>
           </div>
-          <div class="inline-actions">
+          <div class="inline-actions agent-settings-actions">
             <button id="add-agent-row" class="primary">Add Agent</button>
             <button data-nav="/workspaces" class="ghost">Open Workspaces</button>
           </div>
@@ -1697,20 +1699,18 @@ function renderSessionPage(): string {
         </div>
         <div class="feed-list tall" data-feed-list="1" data-scroll-key="team-feed" data-scroll-mode="prepend">${renderSessionFeed(session.id)}</div>
       </section>
-      <section class="agent-column">
-        <section class="panel">
-          <div class="section-head">
-            <div>
-              <p class="eyebrow">Focus</p>
-              <h3>Agents</h3>
-            </div>
+      <section class="panel agent-list-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Focus</p>
+            <h3>Agents</h3>
           </div>
-          <div class="agent-picker">
-            ${agents.map(renderAgentPickerItem).join("")}
-          </div>
-        </section>
-        ${selectedAgent ? renderFocusedAgentCard(session.id, selectedAgent) : `<section class="panel empty-panel"><p class="muted">No agent selected.</p></section>`}
+        </div>
+        <div class="agent-picker">
+          ${agents.map(renderAgentPickerItem).join("")}
+        </div>
       </section>
+      ${selectedAgent ? renderFocusedAgentCard(session.id, selectedAgent) : `<section class="panel empty-panel"><p class="muted">No agent selected.</p></section>`}
     </section>
   `;
 }

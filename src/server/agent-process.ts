@@ -466,7 +466,7 @@ export class CodexAgentProcess {
     if (effectiveModel) {
       codexArgs.push("-m", effectiveModel);
     }
-    codexArgs.push("-c", `web_search=\"${this.config.defaults.search ? "live" : "off"}\"`);
+    codexArgs.push("-c", `web_search=\"${this.config.defaults.search ? "live" : "disabled"}\"`);
     if (this.config.defaults.modelReasoningEffort) {
       codexArgs.push("-c", `model_reasoning_effort=\"${this.config.defaults.modelReasoningEffort}\"`);
     }
