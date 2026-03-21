@@ -165,6 +165,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         promptGuidance: [
           "Explore independently and prioritize architecture options, constraints, assumptions, and concrete plans.",
           "Use the goal board as your primary workspace. Refine open or researching subgoals, split broad work into smaller subgoals, and mark a subgoal ready_for_build only when research on that subgoal is strong enough to hand off.",
+          "When a subgoal still has competing contracts, unresolved assumptions, or active reopen pressure, mark its decisionState as disputed instead of treating it as handoff-ready.",
           "Prefer updating an existing subgoal over creating a near-duplicate. Create a new subgoal only when the owner, stage, or deliverable is materially different.",
           "When another researcher adds a new claim, assumption, objection, or competing plan on the same subgoal, discuss it with the researchers first instead of immediately escalating downstream.",
           "Do not treat implementation start as the end of research. If implementation or review changes the architecture assumptions, acceptance criteria, benchmark/eval contract, or operator workflow for a subgoal, reopen that subgoal in researching and push the changed evidence back into research.",
@@ -192,6 +193,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         promptGuidance: [
           "Explore independently and prioritize risks, tradeoffs, failure modes, and validation strategy.",
           "Use the goal board as your primary workspace. Refine open or researching subgoals, surface failure modes against specific subgoals, and move a subgoal to ready_for_build only when its risk picture is clear enough for implementation.",
+          "If the risk picture is still contested, keep the subgoal decisionState disputed and state the unresolved blocker instead of handing it off downstream.",
           "Prefer updating an existing subgoal over creating a near-duplicate. Create a new subgoal only when the owner, stage, or deliverable is materially different.",
           "When another researcher adds a new claim, assumption, objection, or competing plan on the same subgoal, discuss it with the researchers first instead of immediately escalating downstream.",
           "If implementation or review exposes a new failure mode, broken assumption, changed acceptance criteria, benchmark/eval contract mismatch, or workflow gap, reopen that subgoal in researching instead of letting it stay in a pure build/review loop.",
@@ -219,6 +221,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         promptGuidance: [
           "Explore independently and prioritize workflow design, handoff quality, evaluation plan, and operator impact.",
           "Use the goal board as your primary workspace. Refine open or researching subgoals, split workflow concerns into concrete subgoals, and move a subgoal to ready_for_build only when the handoff is strong enough for execution.",
+          "If operator workflow or acceptance semantics are still in dispute, keep decisionState disputed and record the reopen reason instead of moving the subgoal downstream.",
           "Prefer updating an existing subgoal over creating a near-duplicate. Create a new subgoal only when the owner, stage, or deliverable is materially different.",
           "When another researcher adds a new claim, assumption, objection, or competing plan on the same subgoal, discuss it with the researchers first instead of immediately escalating downstream.",
           "If implementation or review reveals that the operator workflow, acceptance semantics, or handoff contract was wrong or incomplete, reopen the affected subgoal in researching and restate the changed workflow requirement clearly.",
@@ -247,6 +250,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
           "Act as the synthesis and routing layer for the goal board.",
           "Watch for subgoals that become ready_for_build or blocked, resolve conflicts, and decide the next owner.",
           "When research converges, move only the narrowest executable slice from ready_for_build to building and assign it to implementer_1 with a concrete handoff.",
+          "Treat decisionState as a hard gate: only move a subgoal to building when its decisionState is resolved. If the contract is still disputed, keep it in researching or ready_for_build and name the unresolved question.",
           "Do not push every promising research branch into building at once. Leave additional buildable work in ready_for_build so researchers can keep refining it while implementation proceeds.",
           "Keep the goal board compact. Merge overlapping ready_for_build items instead of letting multiple near-duplicate handoff cards accumulate.",
           "Do not treat build eagerness as convergence. If researchers are still surfacing contradictions, reopen requests, or 'keep this in research' arguments on the same subgoal, do not route it to building yet.",
@@ -275,6 +279,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         promptGuidance: [
           "Convert subgoals in building into concrete changes in the workspace.",
           "Advance a subgoal to ready_for_review when implementation is ready to audit, or blocked when execution reveals a real blocker.",
+          "If you discover that the assigned build slice was based on an unresolved or contradictory contract, move the subgoal back to researching, set decisionState to disputed, and include a precise reopenReason instead of pushing forward.",
           "If execution shows that the research assumptions, acceptance criteria, benchmark/eval contract, or workflow expectations were wrong or incomplete, do not just keep coding. Surface the changed evidence and send the subgoal back upstream through coordinator_1.",
           "When the build is actually ready to audit, hand it to reviewer_1. Use coordinator_1 only when the scope, assumptions, or routing need to change upstream.",
           "Keep code changes and generated artifacts inside the selected workspace. Do not add repo-level export or publication paths.",
@@ -301,6 +306,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
           "If a build passes review, move that subgoal to done. If fixes are required, move it back to building and target implementer_1.",
           "If review simply accepts a subgoal and no further actor needs a handoff, prefer shouldReply=false and let the goal board/state change carry the completion.",
           "If review shows the problem was framed incorrectly or the acceptance contract itself is wrong, send it back upstream by moving the affected subgoal to researching or blocked and targeting coordinator_1.",
+          "When review reopens a subgoal, mark decisionState disputed and state the exact reopenReason so coordinator_1 cannot route it as resolved build work again.",
           "If you uncover a deeper planning gap, mark the subgoal blocked and include the missing assumption or unresolved risk.",
         ],
         ownedStages: ["ready_for_review"],

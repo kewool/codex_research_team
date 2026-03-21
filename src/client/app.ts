@@ -1601,11 +1601,13 @@ function renderSubgoalBoard(session: AnyObject): string {
             <div class="subgoal-card-badges">
               ${subgoal.activeConflict ? `<span class="feed-badge conflict">conflict</span>` : ""}
               <span class="status-pill ${escapeHtml(String(subgoal.stage || "open"))}">${escapeHtml(subgoal.stage || "open")}</span>
+              <span class="feed-badge">${escapeHtml(String(subgoal.decisionState || "open"))}</span>
             </div>
           </header>
           <h4>${escapeHtml(subgoal.title || "Untitled subgoal")}</h4>
           <p>${escapeHtml(subgoal.summary || "-")}</p>
           ${subgoal.activeConflict && subgoal.lastConflictSummary ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastConflictSummary)}</small>` : ""}
+          ${subgoal.lastReopenReason ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastReopenReason)}</small>` : ""}
           <small>${escapeHtml(subgoal.assigneeAgentId ? `assignee ${subgoal.assigneeAgentId}` : "shared")} · rev ${escapeHtml(String(subgoal.revision || 0))}${subgoal.conflictCount ? ` · conflicts ${escapeHtml(String(subgoal.conflictCount))}` : ""}</small>
         </article>
       `).join("")}

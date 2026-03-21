@@ -11,6 +11,7 @@ import {
   SessionSnapshot,
   SessionStatus,
   SubgoalStage,
+  SubgoalDecisionState,
   SubgoalUpdate,
   TokenUsage,
 } from "../shared/types";
@@ -82,6 +83,7 @@ const SUBGOAL_STAGE_SET = new Set<SubgoalStage>([
   "done",
   "blocked",
 ]);
+const SUBGOAL_DECISION_STATE_SET = new Set<SubgoalDecisionState>(["open", "disputed", "resolved"]);
 
 const RECENT_EVENT_LIMIT = 40;
 const SNAPSHOT_STREAM_TAIL = 2400;
@@ -116,6 +118,24 @@ function shortenText(text: string, maxChars = 160): string {
     return normalized;
   }
   return `${normalized.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function defaultDecisionStateForStage(stage: SubgoalStage): SubgoalDecisionState {
+  switch (stage) {
+    case "ready_for_build":
+    case "building":
+    case "ready_for_review":
+    case "done":
+      return "resolved";
+    case "blocked":
+      return "disputed";
+    default:
+      return "open";
+  }
+}
+
+function normalizeDecisionState(state: unknown, fallback: SubgoalDecisionState): SubgoalDecisionState {
+  return SUBGOAL_DECISION_STATE_SET.has(state as SubgoalDecisionState) ? (state as SubgoalDecisionState) : fallback;
 }
 
 function extractTargetAgentIds(metadata: Record<string, unknown> | undefined): string[] {
@@ -309,6 +329,8 @@ function createSeedSubgoal(goal: string, revision: number, timestamp: string): S
     title: title || "Initial subgoal",
     summary: normalized || "Investigate the top-level goal and break it down into actionable work.",
     stage: "open",
+    decisionState: "open",
+    lastReopenReason: null,
     assigneeAgentId: null,
     updatedAt: timestamp,
     updatedBy: "system",
@@ -379,6 +401,8 @@ export class LiveSession {
             title: String(subgoal?.title ?? "").trim() || "Untitled subgoal",
             summary: String(subgoal?.summary ?? "").trim(),
             stage: normalizeSubgoalStage(subgoal?.stage, "researching"),
+            decisionState: normalizeDecisionState(subgoal?.decisionState, defaultDecisionStateForStage(normalizeSubgoalStage(subgoal?.stage, "researching"))),
+            lastReopenReason: subgoal?.lastReopenReason ? String(subgoal.lastReopenReason) : null,
             assigneeAgentId: String(subgoal?.assigneeAgentId ?? "").trim() || null,
             updatedAt: String(subgoal?.updatedAt ?? nowIso()),
             updatedBy: String(subgoal?.updatedBy ?? "system"),
@@ -862,6 +886,7 @@ export class LiveSession {
         .filter(Boolean),
     );
     const reviewerId = this.defaultAssigneeForStage("ready_for_review");
+    const builderId = this.defaultAssigneeForStage("building");
     const routingOwnerIds = [
       this.defaultAssigneeForStage("ready_for_build"),
       this.defaultAssigneeForStage("blocked"),
@@ -884,7 +909,7 @@ export class LiveSession {
       }
     }
     if (subgoalResult.blockedBuildPromotion) {
-      effectiveTargetAgentIds = effectiveTargetAgentIds.filter((value) => value !== "implementer_1");
+      effectiveTargetAgentIds = builderId ? effectiveTargetAgentIds.filter((value) => value !== builderId) : effectiveTargetAgentIds;
     }
     if (ownsReviewStageOnly && requestedStages.has("done") && effectiveTargetAgentIds.length === 0) {
       result.shouldReply = false;
@@ -1067,8 +1092,10 @@ export class LiveSession {
     const title = String(update.title ?? "").trim() || null;
     const summary = String(update.summary ?? "").trim() || null;
     const stage = update.stage ? normalizeSubgoalStage(update.stage, "researching") : null;
+    const decisionState = update.decisionState ? normalizeDecisionState(update.decisionState, "open") : null;
+    const reopenReason = String(update.reopenReason ?? "").trim() || null;
     const assigneeAgentId = String(update.assigneeAgentId ?? "").trim() || null;
-    if (!id && !expectedRevision && !title && !summary && !stage && !assigneeAgentId) {
+    if (!id && !expectedRevision && !title && !summary && !stage && !decisionState && !reopenReason && !assigneeAgentId) {
       return null;
     }
     return {
@@ -1077,6 +1104,8 @@ export class LiveSession {
       title,
       summary,
       stage,
+      decisionState,
+      reopenReason,
       assigneeAgentId,
     };
   }
@@ -1115,6 +1144,22 @@ export class LiveSession {
       currentAssigneeAgentId: existing.assigneeAgentId ?? null,
       message: `${agentId} proposed ${requestedStage} for ${existing.id} on rev ${expectedRevision}, but the current board is rev ${currentRevision} in ${existing.stage}${existing.assigneeAgentId ? ` assigned to ${existing.assigneeAgentId}` : ""}.`,
     };
+  }
+
+  private inferNextDecisionState(existing: SessionSubgoal | null, update: SubgoalUpdate, requestedStage: SubgoalStage): SubgoalDecisionState {
+    if (update.decisionState) {
+      return normalizeDecisionState(update.decisionState, existing?.decisionState ?? defaultDecisionStateForStage(requestedStage));
+    }
+    if (requestedStage === "researching" || requestedStage === "blocked") {
+      return "disputed";
+    }
+    if (!existing) {
+      return defaultDecisionStateForStage(requestedStage);
+    }
+    if (requestedStage !== existing.stage) {
+      return defaultDecisionStateForStage(requestedStage);
+    }
+    return normalizeDecisionState(existing.decisionState, defaultDecisionStateForStage(existing.stage));
   }
 
   private captureTrackedSubgoalRefs(agent: RuntimeAgent): TrackedSubgoalRef[] {
@@ -1199,6 +1244,14 @@ export class LiveSession {
       if (existingIndex >= 0) {
         const existing = this.subgoals[existingIndex];
         let requestedStage = update.stage ? normalizeSubgoalStage(update.stage, existing.stage) : existing.stage;
+        let decisionState = this.inferNextDecisionState(existing, update, requestedStage);
+        let buildGateMessage: string | null = null;
+        if (requestedStage === "building" && decisionState !== "resolved") {
+          requestedStage = "researching";
+          decisionState = "disputed";
+          blockedBuildPromotion = true;
+          buildGateMessage = `Build promotion blocked for ${existing.id}: unresolved contradictions remain. Mark the subgoal decisionState=resolved before sending it to building.`;
+        }
         if (this.shouldIgnoreStaleSubgoalUpdate(existing, update)) {
           const conflict = this.buildStaleSubgoalConflict(agentId, existing, update, requestedStage);
           if (conflict) {
@@ -1220,19 +1273,27 @@ export class LiveSession {
         const assigneeAgentId = explicitAssignee !== null
           ? (stage === requestedStage ? explicitAssignee : this.defaultAssigneeForStage(stage))
           : (stage !== existing.stage ? this.defaultAssigneeForStage(stage) : existing.assigneeAgentId);
+        const reopenReason = decisionState === "resolved"
+          ? null
+          : (update.reopenReason
+              || buildGateMessage
+              || ((requestedStage === "researching" || requestedStage === "blocked") && (update.summary || existing.summary) ? shortenText(update.summary || existing.summary, 220) : existing.lastReopenReason)
+              || null);
         this.subgoals[existingIndex] = {
           ...existing,
           title: update.title || existing.title,
           summary: update.summary || existing.summary,
           stage,
+          decisionState,
+          lastReopenReason: reopenReason,
           assigneeAgentId,
           updatedAt: timestamp,
           updatedBy: agentId,
           revision: this.subgoalRevision,
           conflictCount: Math.max(0, Number(existing.conflictCount || 0)),
-          activeConflict: false,
-          lastConflictAt: existing.lastConflictAt ?? null,
-          lastConflictSummary: existing.lastConflictSummary ?? null,
+          activeConflict: Boolean(buildGateMessage),
+          lastConflictAt: buildGateMessage ? timestamp : (decisionState === "resolved" ? null : existing.lastConflictAt ?? null),
+          lastConflictSummary: buildGateMessage ? buildGateMessage : (decisionState === "resolved" ? null : existing.lastConflictSummary ?? null),
         };
         changedIds.add(existing.id);
         continue;
@@ -1241,6 +1302,14 @@ export class LiveSession {
       let requestedStage = normalizeSubgoalStage(update.stage, "researching");
       const id = this.nextSubgoalId();
       this.subgoalRevision += 1;
+      let decisionState = this.inferNextDecisionState(null, update, requestedStage);
+      let buildGateMessage: string | null = null;
+      if (requestedStage === "building" && decisionState !== "resolved") {
+        requestedStage = "researching";
+        decisionState = "disputed";
+        blockedBuildPromotion = true;
+        buildGateMessage = `Build promotion blocked for ${id}: unresolved contradictions remain. Mark the subgoal decisionState=resolved before sending it to building.`;
+      }
       if (agentId === "coordinator_1" && requestedStage === "building") {
         requestedStage = "ready_for_build";
         blockedBuildPromotion = true;
@@ -1255,14 +1324,16 @@ export class LiveSession {
         title: update.title || `Subgoal ${id}`,
         summary: update.summary || "No summary provided.",
         stage,
+        decisionState,
+        lastReopenReason: decisionState === "resolved" ? null : (update.reopenReason || buildGateMessage || (update.summary ? shortenText(update.summary, 220) : null)),
         assigneeAgentId: explicitAssignee && stage === requestedStage ? explicitAssignee : this.defaultAssigneeForStage(stage),
         updatedAt: timestamp,
         updatedBy: agentId,
         revision: this.subgoalRevision,
         conflictCount: 0,
-        activeConflict: false,
+        activeConflict: Boolean(buildGateMessage),
         lastConflictAt: null,
-        lastConflictSummary: null,
+        lastConflictSummary: buildGateMessage,
       });
       changedIds.add(id);
     }
@@ -1312,11 +1383,13 @@ export class LiveSession {
     const lines = this.subgoals.map((subgoal) => {
       const assignee = subgoal.assigneeAgentId ? ` assignee=${subgoal.assigneeAgentId}` : "";
       const revision = ` rev=${subgoal.revision}`;
+      const decision = ` decision=${subgoal.decisionState}`;
       const focus = this.actionableSubgoalsForAgent(agent).some((item) => item.id === subgoal.id) ? " focus=true" : "";
       const conflict = subgoal.activeConflict && subgoal.lastConflictSummary
         ? ` conflict=${shortenText(subgoal.lastConflictSummary, 120)}`
         : "";
-      return `- ${subgoal.id}${revision} [${subgoal.stage}]${assignee}${focus}${conflict}: ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}`;
+      const reopen = subgoal.lastReopenReason ? ` reopen=${shortenText(subgoal.lastReopenReason, 100)}` : "";
+      return `- ${subgoal.id}${revision} [${subgoal.stage}]${decision}${assignee}${focus}${conflict}${reopen}: ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}`;
     });
     return lines.join("\n");
   }
@@ -1331,7 +1404,8 @@ export class LiveSession {
         const conflict = subgoal.activeConflict && subgoal.lastConflictSummary
           ? ` !! conflict: ${shortenText(subgoal.lastConflictSummary, 120)}`
           : "";
-        return `- ${subgoal.id} rev=${subgoal.revision} [${subgoal.stage}] ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}${conflict}`;
+        const reopen = subgoal.lastReopenReason ? ` reopen=${shortenText(subgoal.lastReopenReason, 100)}` : "";
+        return `- ${subgoal.id} rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState} ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}${conflict}${reopen}`;
       })
       .join("\n");
   }

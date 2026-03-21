@@ -12,6 +12,8 @@ export const SUBGOAL_STAGES = [
   "blocked",
 ] as const;
 export type SubgoalStage = (typeof SUBGOAL_STAGES)[number];
+export const SUBGOAL_DECISION_STATES = ["open", "disputed", "resolved"] as const;
+export type SubgoalDecisionState = (typeof SUBGOAL_DECISION_STATES)[number];
 
 export interface TokenUsage {
   inputTokens: number;
@@ -87,6 +89,8 @@ export interface SessionSubgoal {
   title: string;
   summary: string;
   stage: SubgoalStage;
+  decisionState: SubgoalDecisionState;
+  lastReopenReason: string | null;
   assigneeAgentId: string | null;
   updatedAt: string;
   updatedBy: string;
@@ -103,6 +107,8 @@ export interface SubgoalUpdate {
   title?: string | null;
   summary?: string | null;
   stage?: SubgoalStage | null;
+  decisionState?: SubgoalDecisionState | null;
+  reopenReason?: string | null;
   assigneeAgentId?: string | null;
 }
 
