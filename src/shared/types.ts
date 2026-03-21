@@ -89,6 +89,12 @@ export interface SessionSubgoal {
   id: string;
   title: string;
   summary: string;
+  facts: string[];
+  openQuestions: string[];
+  resolvedDecisions: string[];
+  acceptanceCriteria: string[];
+  relevantFiles: string[];
+  nextAction: string | null;
   stage: SubgoalStage;
   decisionState: SubgoalDecisionState;
   lastReopenReason: string | null;
@@ -107,6 +113,12 @@ export interface SubgoalUpdate {
   expectedRevision?: number | null;
   title?: string | null;
   summary?: string | null;
+  addFacts?: string[] | null;
+  addOpenQuestions?: string[] | null;
+  addResolvedDecisions?: string[] | null;
+  addAcceptanceCriteria?: string[] | null;
+  addRelevantFiles?: string[] | null;
+  nextAction?: string | null;
   stage?: SubgoalStage | null;
   decisionState?: SubgoalDecisionState | null;
   reopenReason?: string | null;

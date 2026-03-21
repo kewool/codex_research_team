@@ -1735,6 +1735,13 @@ function renderSubgoalBoard(session: AnyObject): string {
   if (subgoals.length === 0) {
     return `<p class="muted">No subgoals yet.</p>`;
   }
+  const renderMemoryList = (label: string, items: unknown[] | null | undefined): string => {
+    const values = Array.isArray(items) ? items.map((item) => String(item ?? "").trim()).filter(Boolean) : [];
+    if (values.length === 0) {
+      return "";
+    }
+    return `<div class="subgoal-memory-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(values.join(" | "))}</span></div>`;
+  };
   return `
     <div class="subgoal-board" data-subgoal-count="${escapeHtml(String(subgoals.length))}">
       ${subgoals.map((subgoal: AnyObject) => `
@@ -1749,6 +1756,14 @@ function renderSubgoalBoard(session: AnyObject): string {
           </header>
           <h4>${escapeHtml(subgoal.title || "Untitled subgoal")}</h4>
           <p>${escapeHtml(subgoal.summary || "-")}</p>
+          <div class="subgoal-memory">
+            ${renderMemoryList("Facts", subgoal.facts)}
+            ${renderMemoryList("Open", subgoal.openQuestions)}
+            ${renderMemoryList("Resolved", subgoal.resolvedDecisions)}
+            ${renderMemoryList("Acceptance", subgoal.acceptanceCriteria)}
+            ${renderMemoryList("Files", subgoal.relevantFiles)}
+            ${subgoal.nextAction ? `<div class="subgoal-memory-row"><strong>Next</strong><span>${escapeHtml(String(subgoal.nextAction || ""))}</span></div>` : ""}
+          </div>
           ${subgoal.activeConflict && subgoal.lastConflictSummary ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastConflictSummary)}</small>` : ""}
           ${subgoal.lastReopenReason ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastReopenReason)}</small>` : ""}
           <small>${escapeHtml(subgoal.assigneeAgentId ? `assignee ${subgoal.assigneeAgentId}` : "shared")} · rev ${escapeHtml(String(subgoal.revision || 0))}${subgoal.conflictCount ? ` · conflicts ${escapeHtml(String(subgoal.conflictCount))}` : ""}</small>

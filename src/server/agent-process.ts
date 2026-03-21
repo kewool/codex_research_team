@@ -222,10 +222,12 @@ export class CodexAgentProcess {
       "- Only give public working notes. Do not expose hidden reasoning.",
       "- The goal board is the source of truth for progress. Use subgoalUpdates to create, refine, assign, or advance subgoals whenever the state of the work has changed.",
       "- Prefer updating the relevant subgoal over merely describing progress in free text.",
+      "- Treat subgoalUpdates.summary as the canonical short state summary, and use addFacts/addOpenQuestions/addResolvedDecisions/addAcceptanceCriteria/addRelevantFiles/nextAction to store durable details without repeating them in team chat.",
+      "- If you are not the current assignee or a coordination owner for an existing subgoal, prefer append-only updates (facts/questions/files) instead of trying to change stage, decisionState, or assignee.",
       "- Use subgoal decisionState explicitly: open while still exploring, disputed when contradictory evidence or unresolved reopen pressure remains, resolved only when the core contract for that subgoal is settled enough to hand off downstream.",
       "- If you reopen a subgoal because implementation/review changed the assumptions or exposed a contradiction, include reopenReason and set decisionState to disputed.",
       "- When you update an existing subgoal by id, include expectedRevision and copy the rev number shown in the Goal board or Actionable subgoals view. If the revision has changed since you read it, the runtime may ignore the stale state mutation instead of overwriting newer work.",
-      "- Keep teamMessage compact: one short delta or handoff, ideally 1-4 sentences. Put durable state into subgoalUpdates.summary instead of repeating long evidence dumps in teamMessage.",
+      "- Keep teamMessage compact: one short delta or handoff, ideally 1-4 sentences. Put durable state into subgoalUpdates.summary and the structured append fields instead of repeating long evidence dumps in teamMessage.",
       "- Do not paste long command transcripts, multi-paragraph audits, or large code excerpts into teamMessage. Summarize the conclusion, the changed evidence, and the next action.",
       "- Reply only when you add materially new evidence, a concrete contradiction, or a decision-changing action.",
       "- Do not reply just to agree, restate, lightly refine, or say that you support a prior point.",
@@ -242,7 +244,7 @@ export class CodexAgentProcess {
       "- Implementation and review can reopen research. If downstream evidence changes assumptions, acceptance criteria, benchmark/eval contracts, or operator workflow, update the relevant subgoal back to researching instead of keeping it trapped in a build/review loop.",
       "Return exactly this shape between the XML tags:",
       "<codex_research_team-response>",
-      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"id":"sg-1","expectedRevision":3,"title":"short subgoal title","summary":"what changed","stage":"researching","decisionState":"disputed","reopenReason":"what remains unresolved","assigneeAgentId":null}],"completion":"continue"}',
+      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"id":"sg-1","expectedRevision":3,"summary":"what changed","addFacts":["new evidence"],"addOpenQuestions":["what remains unresolved"],"addResolvedDecisions":["what is now settled"],"addAcceptanceCriteria":["what must be true"],"addRelevantFiles":["src/example.ts"],"nextAction":"who should do what next","stage":"researching","decisionState":"disputed","reopenReason":"what remains unresolved","assigneeAgentId":null}],"completion":"continue"}',
       "</codex_research_team-response>",
       `Finish with this token on its own line: ${token}`,
     ].join("\n\n");
@@ -570,6 +572,10 @@ export class CodexAgentProcess {
 }
 
 function normalizeParsedTurnResult(parsed: Partial<AgentTurnResult> & { teamMessage?: string }, rawText: string): AgentTurnResult {
+  const normalizeStringArray = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? value.map((item) => String(item ?? "").trim()).filter(Boolean)
+      : [];
   const notes = Array.isArray(parsed.workingNotes)
     ? parsed.workingNotes.map((item) => String(item).trim()).filter(Boolean)
     : [];
@@ -593,6 +599,14 @@ function normalizeParsedTurnResult(parsed: Partial<AgentTurnResult> & { teamMess
             : null,
           title: String((item as Record<string, unknown>).title ?? "").trim() || null,
           summary: String((item as Record<string, unknown>).summary ?? "").trim() || null,
+          addFacts: normalizeStringArray((item as Record<string, unknown>).addFacts),
+          addOpenQuestions: normalizeStringArray((item as Record<string, unknown>).addOpenQuestions),
+          addResolvedDecisions: normalizeStringArray((item as Record<string, unknown>).addResolvedDecisions),
+          addAcceptanceCriteria: normalizeStringArray((item as Record<string, unknown>).addAcceptanceCriteria),
+          addRelevantFiles: normalizeStringArray((item as Record<string, unknown>).addRelevantFiles),
+          ...(Object.prototype.hasOwnProperty.call(item as Record<string, unknown>, "nextAction")
+            ? { nextAction: String((item as Record<string, unknown>).nextAction ?? "").trim() || null }
+            : {}),
           stage: String((item as Record<string, unknown>).stage ?? "").trim() || null,
           decisionState: String((item as Record<string, unknown>).decisionState ?? "").trim() || null,
           reopenReason: String((item as Record<string, unknown>).reopenReason ?? "").trim() || null,

@@ -1107,6 +1107,29 @@ label {
   overflow-wrap: anywhere;
 }
 
+.subgoal-memory {
+  display: grid;
+  gap: 0.34rem;
+}
+
+.subgoal-memory-row {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.subgoal-memory-row strong {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.subgoal-memory-row span {
+  font-size: 0.86rem;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
 .subgoal-conflict-text {
   color: #9a3412;
 }

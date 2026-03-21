@@ -88,6 +88,11 @@ const SUBGOAL_DECISION_STATE_SET = new Set<SubgoalDecisionState>(["open", "dispu
 const RECENT_EVENT_LIMIT = 40;
 const SNAPSHOT_STREAM_TAIL = 2400;
 const DRAIN_DEBOUNCE_MS = 350;
+const SUBGOAL_FACT_LIMIT = 6;
+const SUBGOAL_QUESTION_LIMIT = 4;
+const SUBGOAL_DECISION_LIMIT = 4;
+const SUBGOAL_ACCEPTANCE_LIMIT = 4;
+const SUBGOAL_FILE_LIMIT = 6;
 
 function emptyTokenUsage(): TokenUsage {
   return {
@@ -136,6 +141,29 @@ function defaultDecisionStateForStage(stage: SubgoalStage): SubgoalDecisionState
 
 function normalizeDecisionState(state: unknown, fallback: SubgoalDecisionState): SubgoalDecisionState {
   return SUBGOAL_DECISION_STATE_SET.has(state as SubgoalDecisionState) ? (state as SubgoalDecisionState) : fallback;
+}
+
+function normalizeMemoryList(values: unknown, limit: number, itemLimit = 180): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const items = values
+    .map((value) => shortenText(String(value ?? "").trim(), itemLimit))
+    .filter(Boolean);
+  return [...new Set(items)].slice(0, limit);
+}
+
+function mergeMemoryList(existing: string[], additions: unknown, limit: number, itemLimit = 180): string[] {
+  const merged = [
+    ...(Array.isArray(existing) ? existing.map((value) => shortenText(String(value ?? "").trim(), itemLimit)).filter(Boolean) : []),
+    ...normalizeMemoryList(additions, limit, itemLimit),
+  ];
+  return [...new Set(merged)].slice(-limit);
+}
+
+function normalizeNextAction(value: unknown): string | null {
+  const normalized = shortenText(String(value ?? "").trim(), 200);
+  return normalized || null;
 }
 
 function extractTargetAgentIds(metadata: Record<string, unknown> | undefined): string[] {
@@ -328,6 +356,12 @@ function createSeedSubgoal(goal: string, revision: number, timestamp: string): S
     id: "sg-1",
     title: title || "Initial subgoal",
     summary: normalized || "Investigate the top-level goal and break it down into actionable work.",
+    facts: [],
+    openQuestions: [],
+    resolvedDecisions: [],
+    acceptanceCriteria: [],
+    relevantFiles: [],
+    nextAction: null,
     stage: "open",
     decisionState: "open",
     lastReopenReason: null,
@@ -400,6 +434,12 @@ export class LiveSession {
             id: String(subgoal?.id ?? "").trim(),
             title: String(subgoal?.title ?? "").trim() || "Untitled subgoal",
             summary: String(subgoal?.summary ?? "").trim(),
+            facts: normalizeMemoryList(subgoal?.facts, SUBGOAL_FACT_LIMIT),
+            openQuestions: normalizeMemoryList(subgoal?.openQuestions, SUBGOAL_QUESTION_LIMIT),
+            resolvedDecisions: normalizeMemoryList(subgoal?.resolvedDecisions, SUBGOAL_DECISION_LIMIT),
+            acceptanceCriteria: normalizeMemoryList(subgoal?.acceptanceCriteria, SUBGOAL_ACCEPTANCE_LIMIT),
+            relevantFiles: normalizeMemoryList(subgoal?.relevantFiles, SUBGOAL_FILE_LIMIT, 120),
+            nextAction: normalizeNextAction(subgoal?.nextAction),
             stage: normalizeSubgoalStage(subgoal?.stage, "researching"),
             decisionState: normalizeDecisionState(subgoal?.decisionState, defaultDecisionStateForStage(normalizeSubgoalStage(subgoal?.stage, "researching"))),
             lastReopenReason: subgoal?.lastReopenReason ? String(subgoal.lastReopenReason) : null,
@@ -778,8 +818,11 @@ export class LiveSession {
     const transcript = this.buildTranscript(agent, digest);
     const digestSummary = buildTriggerSummary(digest);
     const triggerSummary = [
-      "Goal board:",
+      "Goal board overview:",
       this.buildGoalBoardSummary(agent),
+      "",
+      "Relevant subgoal memory for you:",
+      this.buildRelevantSubgoalSummary(agent),
       "",
       "Actionable subgoals for you:",
       this.buildActionableSubgoalSummary(agent),
@@ -1116,6 +1159,20 @@ export class LiveSession {
     return this.agentOwnsStage(agentId, existing.stage);
   }
 
+  private hasStateMutation(update: SubgoalUpdate, existing: SessionSubgoal | null): boolean {
+    if (!existing) {
+      return Boolean(update.title || update.summary || update.stage || update.decisionState || update.reopenReason || update.assigneeAgentId);
+    }
+    return Boolean(
+      (update.title && update.title !== existing.title) ||
+      (update.summary && update.summary !== existing.summary) ||
+      (update.stage && update.stage !== existing.stage) ||
+      (update.decisionState && update.decisionState !== existing.decisionState) ||
+      (update.reopenReason && update.reopenReason !== existing.lastReopenReason) ||
+      (update.assigneeAgentId !== undefined && (update.assigneeAgentId || null) !== (existing.assigneeAgentId || null))
+    );
+  }
+
   private normalizeAssigneeForStage(explicitAssignee: string | null, stage: SubgoalStage, existingAssignee?: string | null): string | null {
     if (explicitAssignee && this.agentOwnsStage(explicitAssignee, stage)) {
       return explicitAssignee;
@@ -1150,11 +1207,32 @@ export class LiveSession {
     const expectedRevision = normalizeExpectedRevision(update.expectedRevision);
     const title = String(update.title ?? "").trim() || null;
     const summary = String(update.summary ?? "").trim() || null;
+    const addFacts = normalizeMemoryList(update.addFacts, SUBGOAL_FACT_LIMIT);
+    const addOpenQuestions = normalizeMemoryList(update.addOpenQuestions, SUBGOAL_QUESTION_LIMIT);
+    const addResolvedDecisions = normalizeMemoryList(update.addResolvedDecisions, SUBGOAL_DECISION_LIMIT);
+    const addAcceptanceCriteria = normalizeMemoryList(update.addAcceptanceCriteria, SUBGOAL_ACCEPTANCE_LIMIT);
+    const addRelevantFiles = normalizeMemoryList(update.addRelevantFiles, SUBGOAL_FILE_LIMIT, 120);
+    const nextAction = update.nextAction !== undefined ? normalizeNextAction(update.nextAction) : undefined;
     const stage = update.stage ? normalizeSubgoalStage(update.stage, "researching") : null;
     const decisionState = update.decisionState ? normalizeDecisionState(update.decisionState, "open") : null;
     const reopenReason = String(update.reopenReason ?? "").trim() || null;
     const assigneeAgentId = String(update.assigneeAgentId ?? "").trim() || null;
-    if (!id && !expectedRevision && !title && !summary && !stage && !decisionState && !reopenReason && !assigneeAgentId) {
+    if (
+      !id &&
+      !expectedRevision &&
+      !title &&
+      !summary &&
+      addFacts.length === 0 &&
+      addOpenQuestions.length === 0 &&
+      addResolvedDecisions.length === 0 &&
+      addAcceptanceCriteria.length === 0 &&
+      addRelevantFiles.length === 0 &&
+      nextAction === undefined &&
+      !stage &&
+      !decisionState &&
+      !reopenReason &&
+      !assigneeAgentId
+    ) {
       return null;
     }
     return {
@@ -1162,6 +1240,12 @@ export class LiveSession {
       expectedRevision,
       title,
       summary,
+      addFacts,
+      addOpenQuestions,
+      addResolvedDecisions,
+      addAcceptanceCriteria,
+      addRelevantFiles,
+      ...(nextAction !== undefined ? { nextAction } : {}),
       stage,
       decisionState,
       reopenReason,
@@ -1301,16 +1385,18 @@ export class LiveSession {
       const timestamp = nowIso();
       if (existingIndex >= 0) {
         const existing = this.subgoals[existingIndex];
-        let requestedStage = update.stage ? normalizeSubgoalStage(update.stage, existing.stage) : existing.stage;
-        let decisionState = this.inferNextDecisionState(existing, update, requestedStage);
+        const canMutateState = this.canMutateSubgoal(agentId, existing);
+        const wantsStateMutation = this.hasStateMutation(update, existing);
+        let requestedStage = canMutateState && update.stage ? normalizeSubgoalStage(update.stage, existing.stage) : existing.stage;
+        let decisionState = canMutateState ? this.inferNextDecisionState(existing, update, requestedStage) : existing.decisionState;
         let buildGateMessage: string | null = null;
-        if (requestedStage === "building" && decisionState !== "resolved") {
+        if (canMutateState && requestedStage === "building" && decisionState !== "resolved") {
           requestedStage = "researching";
           decisionState = "disputed";
           blockedBuildPromotion = true;
           buildGateMessage = `Build promotion blocked for ${existing.id}: unresolved contradictions remain. Mark the subgoal decisionState=resolved before sending it to building.`;
         }
-        if (this.shouldIgnoreStaleSubgoalUpdate(existing, update)) {
+        if (this.shouldIgnoreStaleSubgoalUpdate(existing, update) && wantsStateMutation) {
           const conflict = this.buildStaleSubgoalConflict(agentId, existing, update, requestedStage);
           if (conflict) {
             for (const changedId of this.recordSubgoalConflicts([conflict])) {
@@ -1320,11 +1406,11 @@ export class LiveSession {
           }
           continue;
         }
-        if (!this.canMutateSubgoal(agentId, existing)) {
+        if (!canMutateState && !update.addFacts?.length && !update.addOpenQuestions?.length && !update.addResolvedDecisions?.length && !update.addAcceptanceCriteria?.length && !update.addRelevantFiles?.length) {
           continue;
         }
         this.subgoalRevision += 1;
-        const explicitAssignee = update.assigneeAgentId != null
+        const explicitAssignee = canMutateState && update.assigneeAgentId != null
           ? (update.assigneeAgentId && this.agents.has(update.assigneeAgentId) ? update.assigneeAgentId : null)
           : null;
         const requestedAssignee = explicitAssignee !== null
@@ -1336,16 +1422,25 @@ export class LiveSession {
           stage,
           stage !== existing.stage ? null : existing.assigneeAgentId,
         );
-        const reopenReason = decisionState === "resolved"
+        const reopenReason = !canMutateState
+          ? existing.lastReopenReason
+          : decisionState === "resolved"
           ? null
           : (update.reopenReason
               || buildGateMessage
               || ((requestedStage === "researching" || requestedStage === "blocked") && (update.summary || existing.summary) ? shortenText(update.summary || existing.summary, 220) : existing.lastReopenReason)
               || null);
+        const inferredFact = !canMutateState && update.summary ? [update.summary] : [];
         this.subgoals[existingIndex] = {
           ...existing,
-          title: update.title || existing.title,
-          summary: update.summary || existing.summary,
+          title: canMutateState ? (update.title || existing.title) : existing.title,
+          summary: canMutateState ? (update.summary || existing.summary) : existing.summary,
+          facts: mergeMemoryList(existing.facts, [...inferredFact, ...(update.addFacts || [])], SUBGOAL_FACT_LIMIT),
+          openQuestions: mergeMemoryList(existing.openQuestions, update.addOpenQuestions, SUBGOAL_QUESTION_LIMIT),
+          resolvedDecisions: mergeMemoryList(existing.resolvedDecisions, update.addResolvedDecisions, SUBGOAL_DECISION_LIMIT),
+          acceptanceCriteria: mergeMemoryList(existing.acceptanceCriteria, update.addAcceptanceCriteria, SUBGOAL_ACCEPTANCE_LIMIT),
+          relevantFiles: mergeMemoryList(existing.relevantFiles, update.addRelevantFiles, SUBGOAL_FILE_LIMIT, 120),
+          nextAction: canMutateState && update.nextAction !== undefined ? normalizeNextAction(update.nextAction) : existing.nextAction,
           stage,
           decisionState,
           lastReopenReason: reopenReason,
@@ -1386,6 +1481,12 @@ export class LiveSession {
         id,
         title: update.title || `Subgoal ${id}`,
         summary: update.summary || "No summary provided.",
+        facts: mergeMemoryList([], update.addFacts, SUBGOAL_FACT_LIMIT),
+        openQuestions: mergeMemoryList([], update.addOpenQuestions, SUBGOAL_QUESTION_LIMIT),
+        resolvedDecisions: mergeMemoryList([], update.addResolvedDecisions, SUBGOAL_DECISION_LIMIT),
+        acceptanceCriteria: mergeMemoryList([], update.addAcceptanceCriteria, SUBGOAL_ACCEPTANCE_LIMIT),
+        relevantFiles: mergeMemoryList([], update.addRelevantFiles, SUBGOAL_FILE_LIMIT, 120),
+        nextAction: update.nextAction !== undefined ? normalizeNextAction(update.nextAction) : null,
         stage,
         decisionState,
         lastReopenReason: decisionState === "resolved" ? null : (update.reopenReason || buildGateMessage || (update.summary ? shortenText(update.summary, 220) : null)),
@@ -1432,6 +1533,48 @@ export class LiveSession {
     });
   }
 
+  private relevantSubgoalsForAgent(agent: RuntimeAgent): SessionSubgoal[] {
+    const actionable = this.actionableSubgoalsForAgent(agent);
+    const ownedStages = Array.isArray(agent.preset.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
+    const ownsDiscoveryStages = ownedStages.includes("open") || ownedStages.includes("researching");
+    const ownsRoutingStages = ownedStages.includes("ready_for_build") || ownedStages.includes("blocked");
+    const candidates = new Map<string, SessionSubgoal>();
+    const push = (subgoal: SessionSubgoal | null | undefined): void => {
+      if (!subgoal?.id) {
+        return;
+      }
+      candidates.set(subgoal.id, subgoal);
+    };
+
+    for (const subgoal of actionable) {
+      push(subgoal);
+    }
+    if (ownsDiscoveryStages) {
+      for (const subgoal of this.subgoals) {
+        if (subgoal.decisionState === "disputed" || subgoal.activeConflict || subgoal.assigneeAgentId === agent.preset.id) {
+          push(subgoal);
+        }
+      }
+    } else if (ownsRoutingStages) {
+      for (const subgoal of this.subgoals) {
+        if (
+          subgoal.activeConflict ||
+          subgoal.decisionState === "disputed" ||
+          subgoal.stage === "ready_for_build" ||
+          subgoal.stage === "blocked" ||
+          subgoal.stage === "building" ||
+          subgoal.stage === "ready_for_review"
+        ) {
+          push(subgoal);
+        }
+      }
+    }
+
+    return [...candidates.values()]
+      .sort((left, right) => Number(right.revision || 0) - Number(left.revision || 0))
+      .slice(0, ownsDiscoveryStages || ownsRoutingStages ? 4 : 2);
+  }
+
   private goalBoardNeedsAttention(agent: RuntimeAgent): boolean {
     if (this.actionableSubgoalsForAgent(agent).length === 0) {
       return false;
@@ -1448,11 +1591,9 @@ export class LiveSession {
       const revision = ` rev=${subgoal.revision}`;
       const decision = ` decision=${subgoal.decisionState}`;
       const focus = this.actionableSubgoalsForAgent(agent).some((item) => item.id === subgoal.id) ? " focus=true" : "";
-      const conflict = subgoal.activeConflict && subgoal.lastConflictSummary
-        ? ` conflict=${shortenText(subgoal.lastConflictSummary, 120)}`
-        : "";
-      const reopen = subgoal.lastReopenReason ? ` reopen=${shortenText(subgoal.lastReopenReason, 100)}` : "";
-      return `- ${subgoal.id}${revision} [${subgoal.stage}]${decision}${assignee}${focus}${conflict}${reopen}: ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}`;
+      const conflict = subgoal.activeConflict ? ` conflicts=${Math.max(1, Number(subgoal.conflictCount || 0))}` : "";
+      const reopen = subgoal.lastReopenReason ? ` reopen=true` : "";
+      return `- ${subgoal.id}${revision} [${subgoal.stage}]${decision}${assignee}${focus}${conflict}${reopen}: ${shortenText(subgoal.title, 90)}`;
     });
     return lines.join("\n");
   }
@@ -1468,9 +1609,49 @@ export class LiveSession {
           ? ` !! conflict: ${shortenText(subgoal.lastConflictSummary, 120)}`
           : "";
         const reopen = subgoal.lastReopenReason ? ` reopen=${shortenText(subgoal.lastReopenReason, 100)}` : "";
-        return `- ${subgoal.id} rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState} ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}${conflict}${reopen}`;
+        return `- ${subgoal.id} rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState} ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 140)}${conflict}${reopen}`;
       })
       .join("\n");
+  }
+
+  private buildRelevantSubgoalSummary(agent: RuntimeAgent): string {
+    const relevant = this.relevantSubgoalsForAgent(agent);
+    if (relevant.length === 0) {
+      return "(none)";
+    }
+    return relevant
+      .map((subgoal) => {
+        const lines = [
+          `- ${subgoal.id} rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState}${subgoal.assigneeAgentId ? ` assignee=${subgoal.assigneeAgentId}` : ""}: ${shortenText(subgoal.title, 100)}`,
+          `  summary: ${shortenText(subgoal.summary, 180)}`,
+        ];
+        if (subgoal.facts.length > 0) {
+          lines.push(`  facts: ${subgoal.facts.map((item) => shortenText(item, 120)).join(" | ")}`);
+        }
+        if (subgoal.openQuestions.length > 0) {
+          lines.push(`  open_questions: ${subgoal.openQuestions.map((item) => shortenText(item, 120)).join(" | ")}`);
+        }
+        if (subgoal.resolvedDecisions.length > 0) {
+          lines.push(`  resolved: ${subgoal.resolvedDecisions.map((item) => shortenText(item, 120)).join(" | ")}`);
+        }
+        if (subgoal.acceptanceCriteria.length > 0) {
+          lines.push(`  acceptance: ${subgoal.acceptanceCriteria.map((item) => shortenText(item, 120)).join(" | ")}`);
+        }
+        if (subgoal.relevantFiles.length > 0) {
+          lines.push(`  files: ${subgoal.relevantFiles.join(", ")}`);
+        }
+        if (subgoal.nextAction) {
+          lines.push(`  next_action: ${shortenText(subgoal.nextAction, 140)}`);
+        }
+        if (subgoal.lastReopenReason) {
+          lines.push(`  reopen_reason: ${shortenText(subgoal.lastReopenReason, 140)}`);
+        }
+        if (subgoal.activeConflict && subgoal.lastConflictSummary) {
+          lines.push(`  conflict: ${shortenText(subgoal.lastConflictSummary, 140)}`);
+        }
+        return lines.join("\n");
+      })
+      .join("\n\n");
   }
 
   private pingGoalBoardOwners(): void {
