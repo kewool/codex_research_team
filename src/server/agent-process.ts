@@ -104,6 +104,10 @@ function routingGuidanceLines(agent: AgentPreset, allAgents: AgentPreset[]): str
   return lines;
 }
 
+function hasStructuredResponseEnvelope(rawText: string): boolean {
+  return /<codex_research_team-response>[\s\S]*?<\/codex_research_team-response>/i.test(String(rawText ?? ""));
+}
+
 export class CodexAgentProcess {
   private readonly config: AppConfig;
   private readonly agent: AgentPreset;
@@ -112,7 +116,6 @@ export class CodexAgentProcess {
   private readonly hooks: AgentProcessHooks;
   private readonly files: AgentFiles;
   private readonly promptFilePath: string;
-  private readonly promptFileRef: string;
   private process: ChildProcessWithoutNullStreams | null = null;
   private commandLine = "";
   private stdoutTail = "";
@@ -140,7 +143,6 @@ export class CodexAgentProcess {
     this.files = options.files;
     this.hooks = options.hooks;
     this.promptFilePath = this.files.promptFile;
-    this.promptFileRef = normalizePath(this.promptFilePath);
   }
 
   async start(initialGoal: string): Promise<void> {
@@ -256,11 +258,16 @@ export class CodexAgentProcess {
 
     const result = await this.executePrompt(turnPrompt, token);
     this.resumeNotice = "";
-    if (!result.sawToken) {
-      throw new Error("Turn completion token was missing from the Codex response.");
-    }
-
     const parsed = parseAgentTurnResult(result.responseText);
+    if (!result.sawToken) {
+      if (!hasStructuredResponseEnvelope(result.responseText)) {
+        throw new Error("Turn completion token was missing from the Codex response.");
+      }
+      parsed.workingNotes = [
+        ...parsed.workingNotes,
+        "Completion token was missing; accepted the structured response fallback.",
+      ];
+    }
     if (parsed.completion === "blocked" && result.stderrText.trim()) {
       parsed.workingNotes = [...parsed.workingNotes, `stderr: ${result.stderrText.trim()}`];
     }
@@ -302,13 +309,14 @@ export class CodexAgentProcess {
           NO_COLOR: "1",
           FORCE_COLOR: "0",
         },
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
         windowsVerbatimArguments: spec.windowsVerbatimArguments,
         shell: spec.shell,
       });
 
       this.process = child;
+      child.stdin.end(promptText, "utf8");
       let stdoutBuffer = "";
       let stderrBuffer = "";
       const agentMessages: string[] = [];
@@ -469,13 +477,6 @@ export class CodexAgentProcess {
 
   private buildCommandSpec(): { file: string; args: string[]; windowsVerbatimArguments: boolean; shell: boolean } {
     const effectiveModel = this.agent.model ?? this.config.defaults.model;
-    const wrapperPrompt = [
-      `Read the UTF-8 file at the absolute path '${this.promptFileRef}' and treat its contents as the real prompt for this turn.`,
-      "Follow that file exactly.",
-      "Respond directly to that file's contents.",
-      "Do not mention the wrapper prompt, the file path, or the act of reading the file.",
-      "If you use a shell command to read it on Windows, prefer a UTF-8 safe no-profile read.",
-    ].join(" ");
 
     const codexArgs: string[] = [];
     if (!this.config.defaults.dangerousBypass) {
@@ -494,7 +495,7 @@ export class CodexAgentProcess {
     } else {
       codexArgs.push("-s", this.config.defaults.sandbox);
     }
-    codexArgs.push(wrapperPrompt);
+    codexArgs.push("-");
 
     if (process.platform !== "win32") {
       return {

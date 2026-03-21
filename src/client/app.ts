@@ -810,8 +810,8 @@ function renderDashboardPage(): string {
       <article class="metric-card panel"><span class="metric-label">Saved Sessions</span><strong>${escapeHtml(String(sessions.length))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Workspaces</span><strong>${escapeHtml(String((config?.workspaces || []).length))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Agents</span><strong>${escapeHtml(String((config?.agents || []).length))}</strong></article>
-      ${renderUsageMetricCard("5h Limit", usageStatus?.primary, usageStatus)}
-      ${renderUsageMetricCard("Weekly Limit", usageStatus?.secondary, usageStatus)}
+      ${renderUsageMetricCard("5h Remaining", usageStatus?.primary, usageStatus)}
+      ${renderUsageMetricCard("Weekly Remaining", usageStatus?.secondary, usageStatus)}
     </section>
     <section class="panel page-section">
       <div class="section-head">
@@ -1347,6 +1347,15 @@ function formatPercent(value: unknown): string {
   return `${Math.round(number)}%`;
 }
 
+function formatRemainingPercent(usedPercent: unknown): string {
+  const used = Number(usedPercent);
+  if (!Number.isFinite(used)) {
+    return "--";
+  }
+  const remaining = Math.max(0, Math.min(100, 100 - used));
+  return `${Math.round(remaining)}%`;
+}
+
 function formatLimitReset(value: unknown): string {
   const text = String(value ?? "").trim();
   if (!text) {
@@ -1366,8 +1375,10 @@ function formatLimitReset(value: unknown): string {
 
 function renderUsageMetricCard(label: string, window: AnyObject | null | undefined, status: AnyObject | null): string {
   const available = Boolean(status?.available && window);
-  const value = available ? formatPercent(window?.usedPercent) : "--";
-  const note = available ? formatLimitReset(window?.resetsAt) : "No recent quota data";
+  const value = available ? formatRemainingPercent(window?.usedPercent) : "--";
+  const note = available
+    ? `${formatPercent(window?.usedPercent)} used - ${formatLimitReset(window?.resetsAt)}`
+    : "No recent quota data";
   return `
     <article class="metric-card panel">
       <span class="metric-label">${escapeHtml(label)}</span>

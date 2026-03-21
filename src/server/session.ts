@@ -937,31 +937,47 @@ export class LiveSession {
     const allConflicts = [...subgoalResult.conflicts, ...obsoleteConflicts];
     if (allConflicts.length > 0) {
       const coordinatorId = this.defaultAssigneeForStage("ready_for_build");
+      const groupedConflicts = new Map<string, {
+        conflicts: StaleSubgoalConflict[];
+        targets: string[];
+      }>();
       for (const conflict of allConflicts) {
-        const conflictTargets = [...new Set(
-          [coordinatorId, conflict.currentAssigneeAgentId]
+        const key = conflict.subgoalId;
+        const current = groupedConflicts.get(key) || { conflicts: [], targets: [] };
+        current.conflicts.push(conflict);
+        current.targets = [...new Set([
+          ...current.targets,
+          ...[coordinatorId, conflict.currentAssigneeAgentId]
             .map((value) => String(value ?? "").trim())
             .filter((value) => value && value !== agentId && this.agents.has(value)),
-        )];
+        ])];
+        groupedConflicts.set(key, current);
+      }
+      for (const [subgoalId, grouped] of groupedConflicts.entries()) {
+        const latestConflict = grouped.conflicts[grouped.conflicts.length - 1];
+        const conflictSummary = grouped.conflicts
+          .map((conflict) => conflict.message)
+          .filter(Boolean)
+          .join(" | ");
         this.status = "running";
         this.publish(
           "system",
           this.operatorChannel(),
-          shouldSuppressObsoleteTurn && conflict.reason === "obsolete_turn" && result.teamMessage
-            ? `Conflict on ${conflict.subgoalId}: ${conflict.message} Suppressed stale handoff: ${shortenText(result.teamMessage, 220)} Re-read the latest goal board before changing this subgoal again.`
-            : `Conflict on ${conflict.subgoalId}: ${conflict.message} Re-read the latest goal board before changing this subgoal again.`,
+          shouldSuppressObsoleteTurn && grouped.conflicts.some((conflict) => conflict.reason === "obsolete_turn") && result.teamMessage
+            ? `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Suppressed stale handoff: ${shortenText(result.teamMessage, 220)} Re-read the latest goal board before changing this subgoal again.`
+            : `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Re-read the latest goal board before changing this subgoal again.`,
           {
             operatorEvent: true,
             conflictEvent: true,
-            obsoleteEvent: conflict.reason === "obsolete_turn",
-            subgoalIds: [conflict.subgoalId],
-            staleUpdateBy: conflict.agentId,
-            expectedRevision: conflict.expectedRevision,
-            currentRevision: conflict.currentRevision,
-            requestedStage: conflict.requestedStage,
-            currentStage: conflict.currentStage,
-            ...(conflictTargets.length === 1 ? { targetAgentId: conflictTargets[0] } : {}),
-            ...(conflictTargets.length > 0 ? { targetAgentIds: conflictTargets } : {}),
+            obsoleteEvent: grouped.conflicts.some((conflict) => conflict.reason === "obsolete_turn"),
+            subgoalIds: [subgoalId],
+            staleUpdateBy: latestConflict.agentId,
+            expectedRevision: latestConflict.expectedRevision,
+            currentRevision: latestConflict.currentRevision,
+            requestedStage: latestConflict.requestedStage,
+            currentStage: latestConflict.currentStage,
+            ...(grouped.targets.length === 1 ? { targetAgentId: grouped.targets[0] } : {}),
+            ...(grouped.targets.length > 0 ? { targetAgentIds: grouped.targets } : {}),
           },
         );
       }
@@ -1068,9 +1084,46 @@ export class LiveSession {
     return match?.id ?? null;
   }
 
+  private coordinationOwnerIds(): string[] {
+    return [...new Set(
+      this.config.agents
+        .filter((agent) =>
+          Array.isArray(agent.policy?.ownedStages) &&
+          (agent.policy.ownedStages.includes("ready_for_build") || agent.policy.ownedStages.includes("blocked")),
+        )
+        .map((agent) => String(agent.id ?? "").trim())
+        .filter(Boolean),
+    )];
+  }
+
   private agentOwnsStage(agentId: string, stage: SubgoalStage): boolean {
     const runtime = this.agents.get(agentId);
     return Boolean(runtime && Array.isArray(runtime.preset.policy?.ownedStages) && runtime.preset.policy.ownedStages.includes(stage));
+  }
+
+  private requiresGoalBoardOwnership(agent: RuntimeAgent): boolean {
+    const ownedStages = Array.isArray(agent.preset.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
+    return ownedStages.length > 0 && ownedStages.every((stage) => stage === "building" || stage === "ready_for_review");
+  }
+
+  private canMutateSubgoal(agentId: string, existing: SessionSubgoal): boolean {
+    if (this.coordinationOwnerIds().includes(agentId)) {
+      return true;
+    }
+    if (existing.assigneeAgentId) {
+      return existing.assigneeAgentId === agentId;
+    }
+    return this.agentOwnsStage(agentId, existing.stage);
+  }
+
+  private normalizeAssigneeForStage(explicitAssignee: string | null, stage: SubgoalStage, existingAssignee?: string | null): string | null {
+    if (explicitAssignee && this.agentOwnsStage(explicitAssignee, stage)) {
+      return explicitAssignee;
+    }
+    if (existingAssignee && this.agentOwnsStage(existingAssignee, stage)) {
+      return existingAssignee;
+    }
+    return this.defaultAssigneeForStage(stage);
   }
 
   private normalizeStageForAssignee(id: string | null, stage: SubgoalStage, currentSubgoalId?: string): SubgoalStage {
@@ -1215,12 +1268,11 @@ export class LiveSession {
       }
       const existing = this.subgoals[existingIndex];
       const timestamp = nowIso();
-      this.subgoalRevision += 1;
       this.subgoals[existingIndex] = {
         ...existing,
         updatedAt: timestamp,
         updatedBy: "system",
-        revision: this.subgoalRevision,
+        revision: existing.revision,
         conflictCount: Math.max(0, Number(existing.conflictCount || 0)) + 1,
         activeConflict: true,
         lastConflictAt: timestamp,
@@ -1268,6 +1320,9 @@ export class LiveSession {
           }
           continue;
         }
+        if (!this.canMutateSubgoal(agentId, existing)) {
+          continue;
+        }
         this.subgoalRevision += 1;
         const explicitAssignee = update.assigneeAgentId != null
           ? (update.assigneeAgentId && this.agents.has(update.assigneeAgentId) ? update.assigneeAgentId : null)
@@ -1276,9 +1331,11 @@ export class LiveSession {
           ? explicitAssignee
           : (requestedStage !== existing.stage ? this.defaultAssigneeForStage(requestedStage) : existing.assigneeAgentId);
         const stage = this.normalizeStageForAssignee(requestedAssignee, requestedStage, existing.id);
-        const assigneeAgentId = explicitAssignee !== null
-          ? (stage === requestedStage ? explicitAssignee : this.defaultAssigneeForStage(stage))
-          : (stage !== existing.stage ? this.defaultAssigneeForStage(stage) : existing.assigneeAgentId);
+        const assigneeAgentId = this.normalizeAssigneeForStage(
+          explicitAssignee !== null && stage === requestedStage ? explicitAssignee : null,
+          stage,
+          stage !== existing.stage ? null : existing.assigneeAgentId,
+        );
         const reopenReason = decisionState === "resolved"
           ? null
           : (update.reopenReason
@@ -1332,7 +1389,7 @@ export class LiveSession {
         stage,
         decisionState,
         lastReopenReason: decisionState === "resolved" ? null : (update.reopenReason || buildGateMessage || (update.summary ? shortenText(update.summary, 220) : null)),
-        assigneeAgentId: explicitAssignee && stage === requestedStage ? explicitAssignee : this.defaultAssigneeForStage(stage),
+        assigneeAgentId: this.normalizeAssigneeForStage(explicitAssignee && stage === requestedStage ? explicitAssignee : null, stage),
         updatedAt: timestamp,
         updatedBy: agentId,
         revision: this.subgoalRevision,
@@ -1530,7 +1587,13 @@ export class LiveSession {
   }
 
   private shouldDeferAgent(agent: RuntimeAgent): boolean {
-    if (this.hasOperatorOverride(agent) || this.currentTurnHasTargetedRequest(agent)) {
+    if (this.hasOperatorOverride(agent)) {
+      return false;
+    }
+    if (this.requiresGoalBoardOwnership(agent) && !this.goalBoardNeedsAttention(agent)) {
+      return true;
+    }
+    if (this.currentTurnHasTargetedRequest(agent)) {
       return false;
     }
     if (hasPendingDigest(agent.pendingDigest)) {

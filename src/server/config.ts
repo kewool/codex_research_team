@@ -318,10 +318,12 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         ...emptyAgentPolicy(),
         promptGuidance: [
           "Convert subgoals in building into concrete changes in the workspace.",
+          "Treat the goal board as the execution gate. If you do not currently own an actionable subgoal in building, do not start implementing from message text alone; ask a coordination owner to move the subgoal into your stage first.",
           "Advance a subgoal to ready_for_review when implementation is ready to audit, or blocked when execution reveals a real blocker.",
           "If you discover that the assigned build slice was based on an unresolved or contradictory contract, move the subgoal back to researching, set decisionState to disputed, and include a precise reopenReason instead of pushing forward.",
           "If execution shows that the research assumptions, acceptance criteria, benchmark/eval contract, or workflow expectations were wrong or incomplete, do not just keep coding. Surface the changed evidence and send the subgoal back upstream through a coordination owner.",
           "When the build is actually ready to audit, hand it to the current review owner. Use a coordination owner only when the scope, assumptions, or routing need to change upstream.",
+          "Do not claim that the workspace is read-only, blocked by permissions, or blocked by sandbox policy unless you actually attempted a minimal workspace-local write or validation step in this turn and it was denied.",
           "Keep code changes and generated artifacts inside the selected workspace. Do not add repo-level export or publication paths.",
           "If the plan is unclear or conflicting, target a coordination owner instead of pulling every researcher directly into implementation details.",
           "When a validation-only response is needed, target a review owner instead of broadcasting broadly.",

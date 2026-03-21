@@ -110,6 +110,15 @@ function toIsoFromEpochSeconds(value: unknown): string | null {
   return new Date(seconds * 1000).toISOString();
 }
 
+function toTimestampMs(value: string | null | undefined): number {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return 0;
+  }
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function readSessionJsonlCandidates(baseHome: string): Array<{ path: string; mtimeMs: number }> {
   const sessionsRoot = join(baseHome, "sessions");
   if (!existsSync(sessionsRoot)) {
@@ -204,17 +213,40 @@ export function loadCodexUsageStatus(preferredHome?: string | null): {
   secondary: { usedPercent: number | null; windowMinutes: number | null; resetsAt: string | null } | null;
 } {
   const home = codexHome(preferredHome);
+  let best: {
+    candidatePath: string;
+    observedAt: string | null;
+    observedAtMs: number;
+    mtimeMs: number;
+    payload: any;
+  } | null = null;
   for (const candidate of readSessionJsonlCandidates(home)) {
     const found = readLatestRateLimitsFromFile(candidate.path);
     if (!found.payload?.rate_limits) {
       continue;
     }
-    const rateLimits = found.payload.rate_limits;
+    const observedAtMs = toTimestampMs(found.observedAt);
+    if (
+      !best ||
+      observedAtMs > best.observedAtMs ||
+      (observedAtMs === best.observedAtMs && candidate.mtimeMs > best.mtimeMs)
+    ) {
+      best = {
+        candidatePath: candidate.path,
+        observedAt: found.observedAt,
+        observedAtMs,
+        mtimeMs: candidate.mtimeMs,
+        payload: found.payload,
+      };
+    }
+  }
+  if (best?.payload?.rate_limits) {
+    const rateLimits = best.payload.rate_limits;
     const credits = Number(rateLimits.credits);
     return {
       codexHomeDir: home,
-      sourceFile: candidate.path,
-      observedAt: found.observedAt,
+      sourceFile: best.candidatePath,
+      observedAt: best.observedAt,
       available: true,
       planType: String(rateLimits.plan_type ?? "").trim() || null,
       limitId: String(rateLimits.limit_id ?? "").trim() || null,
