@@ -1,76 +1,88 @@
 # codex_research_team
 
-`codex_research_team` is now a TypeScript project with a local Node backend and a browser UI.
-It keeps one long-lived Codex process per agent, streams agent output into the web UI, lets you inject `1/2/3/custom` input into a specific agent, and stores sessions under `runs/`.
+`codex_research_team` is a local multi-agent Codex orchestration tool with a browser UI.
+It runs a configurable team of agents against a selected workspace, keeps session state on disk, and exposes live team feed, goal board, prompts, logs, and token usage in the web app.
 
-## Stack
+## What it does
 
-- Backend: Node + TypeScript
-- UI: browser UI served by the local backend
-- Agent runtime: one long-lived Codex CLI process per agent
-- Storage: JSON config + JSONL/session logs on disk
+- Runs a local Node + TypeScript server with a browser UI
+- Starts one Codex runtime per agent
+- Routes work through a shared goal board with subgoals and stages
+- Stores sessions, agent logs, prompts, and history under `runs/`
+- Supports project-scoped Codex settings, auth, MCP selection, and model defaults
 
-## Layout
+## Requirements
 
-- `src/server/`: session manager, Codex process wrapper, storage, config
-- `src/client/`: browser UI logic
-- `src/shared/`: shared app types
-- `public/`: static HTML and CSS
-- `scripts/run-tsc.mjs`: local TypeScript compiler launcher
-- `runs/`: saved sessions
-- `workspaces/`: saved workspaces and user files
+- Node.js 22+
+- Yarn Classic (`1.x`)
+- Codex CLI available on your `PATH`
 
-## Build
+## Quick start
 
-Use Yarn classic for this project. A local cache folder is already configured in `.yarnrc`, so Yarn stays inside the project directory.
-
-Install and build:
-
-```bash
-& "C:\Program Files\nodejs\yarn.cmd" install
-& "C:\Program Files\nodejs\yarn.cmd" build
-```
-
-If PowerShell blocks `yarn.ps1`, use `yarn.cmd` as shown above. If `yarn` already works in your shell, the short form is:
+Install dependencies:
 
 ```bash
 yarn install
+```
+
+Build the project:
+
+```bash
 yarn build
 ```
 
-## Run
-
-Start the local web server:
+Start the local server:
 
 ```bash
-& "C:\Program Files\nodejs\yarn.cmd" serve
+yarn serve
 ```
 
-Then open the printed URL in your browser, usually:
+Then open the printed URL in your browser. The default is usually:
 
 ```text
 http://127.0.0.1:4280
 ```
 
-Main routes:
+## Workflow
 
-- `/`: dashboard and session launch
-- `/workspaces`: workspace presets and paths
-- `/settings`: runtime, channels, and agent policies
-- `/sessions/<session-id>`: live session detail page
+1. Open `/workspaces` and create or select a workspace.
+2. Put the project files you want agents to work on inside that workspace.
+3. Open `/settings` and adjust agent/team/runtime settings if needed.
+4. Start a session from the dashboard with a top-level goal.
+5. Watch the feed, goal board, and per-agent logs update live.
+6. Send a new goal or operator instruction when you want to redirect the session.
 
-## CLI menus
+## Main routes
 
-Settings menu:
+- `/`: dashboard and session launcher
+- `/workspaces`: workspace presets
+- `/settings`: runtime, auth, models, channels, and agent policies
+- `/sessions/<session-id>`: live or saved session detail view
+
+## CLI commands
+
+Build:
 
 ```bash
-& "C:\Program Files\nodejs\yarn.cmd" settings
+yarn build
 ```
 
-Workspace menu:
+Run the web UI:
 
 ```bash
-& "C:\Program Files\nodejs\yarn.cmd" workspace
+yarn serve
+```
+
+Open the settings menu:
+
+```bash
+yarn settings
+```
+
+Open the workspace menu:
+
+```bash
+yarn workspace
 ```
 
 Initialize a fresh config file:
@@ -79,34 +91,44 @@ Initialize a fresh config file:
 node dist/cli.js init
 ```
 
-## Web UI flow
+## Configuration
 
-1. Save or create a workspace.
-2. Put files into that workspace folder.
-3. Open the web UI.
-4. Enter a goal and start a session.
-5. Watch team feed, agent output, stderr, and prompts live.
-6. Send a new goal, an operator instruction, or `1/2/3/custom` input to a specific agent.
-
-## Config
-
-The project config lives in:
+The main project config lives at:
 
 ```text
 ./codex_research_team.config.json
 ```
 
-This stores:
+This file stores:
 
-- server host/port
-- default workspace
+- server host and port
 - workspace presets
-- agent presets
-- Codex command/model/sandbox settings
+- default workspace
+- agent presets and policies
+- model defaults
+- Codex home/auth mode
+- sandbox and search settings
+- MCP server selection
 
-## Session output
+Project-scoped Codex runtime data is stored under:
 
-Each run creates a folder under `runs/<timestamp>-<slug>/` with:
+```text
+./.codex_research_team/
+```
+
+## Repository layout
+
+- `src/server/`: session manager, runtime orchestration, storage, config, Codex integration
+- `src/client/`: browser UI logic
+- `src/shared/`: shared app types
+- `public/`: static HTML and CSS
+- `scripts/`: local build helpers
+- `runs/`: saved sessions and agent logs
+- `workspaces/`: user workspaces
+
+## Session artifacts
+
+Each session creates a folder under `runs/<timestamp>-<slug>/` with files such as:
 
 - `session.json`
 - `events.jsonl`
@@ -119,5 +141,6 @@ Each run creates a folder under `runs/<timestamp>-<slug>/` with:
 
 ## Notes
 
-- The browser UI is the primary control surface now. The old Tk desktop UI and Python runtime were removed.
-- In this sandbox, spawning Codex from inside Node returns `spawn EPERM`, so end-to-end Codex execution could not be verified here. The server, config flow, UI, session creation path, and persistence were verified locally in this workspace.
+- The browser UI is the primary interface.
+- Session state is persisted locally; saved sessions can be reopened from the UI.
+- Commands and generated changes are expected to stay inside the selected workspace.
