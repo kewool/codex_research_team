@@ -113,10 +113,18 @@ function formatTargetSuffix(metadata: Record<string, unknown> | undefined): stri
   return targetIds.length > 0 ? ` target=${targetIds.join(",")}` : "";
 }
 
-function formatDigestEvent(event: SessionEvent): string {
+function formatSubgoalSuffix(metadata: Record<string, unknown> | undefined): string {
+  const subgoalIds = Array.isArray(metadata?.subgoalIds)
+    ? metadata.subgoalIds.map((value) => String(value ?? "").trim()).filter(Boolean)
+    : [];
+  return subgoalIds.length > 0 ? ` subgoals=${[...new Set(subgoalIds)].join(",")}` : "";
+}
+
+function formatDigestEvent(event: SessionEvent, maxChars = 220): string {
   const targetText = formatTargetSuffix(event.metadata);
   const directText = event.metadata?.directInput ? " direct-input" : "";
-  return `[${event.sender} -> ${event.channel}${targetText}${directText}]\n${String(event.content ?? "").trim() || "-"}`;
+  const subgoalText = formatSubgoalSuffix(event.metadata);
+  return `- #${event.sequence} ${event.sender} -> ${event.channel}${targetText}${subgoalText}${directText}: ${shortenText(event.content, maxChars)}`;
 }
 
 function emptyPendingDigest(): PendingDigest {
@@ -172,33 +180,33 @@ function mergePendingDigest(digest: PendingDigest, event: SessionEvent): Pending
   return next;
 }
 
-function buildDigestSection(title: string, events: SessionEvent[]): string {
+function buildDigestSection(title: string, events: SessionEvent[], maxChars = 220): string {
   if (events.length === 0) {
     return "";
   }
-  return `${title}:\n${events.map((event) => formatDigestEvent(event)).join("\n\n")}`;
+  return `${title}:\n${events.map((event) => formatDigestEvent(event, maxChars)).join("\n")}`;
 }
 
 function buildTriggerSummary(digest: PendingDigest): string {
   const sections: string[] = [];
   if (digest.latestGoal) {
-    sections.push(`Goal update:\n${formatDigestEvent(digest.latestGoal)}`);
+    sections.push(`Goal update:\n${formatDigestEvent(digest.latestGoal, 420)}`);
   }
-  const directInputsSection = buildDigestSection("Direct operator inputs", digest.directInputs);
+  const directInputsSection = buildDigestSection("Direct operator inputs", digest.directInputs, 480);
   if (directInputsSection) {
     sections.push(directInputsSection);
   }
-  const operatorSection = buildDigestSection("Operator directives", digest.operatorEvents);
+  const operatorSection = buildDigestSection("Operator directives", digest.operatorEvents, 320);
   if (operatorSection) {
     sections.push(operatorSection);
   }
   for (const [channel, events] of Object.entries(digest.channelEvents)) {
-    const channelSection = buildDigestSection(`Channel digest: ${channel}`, events);
+    const channelSection = buildDigestSection(`Channel digest: ${channel}`, events, 220);
     if (channelSection) {
       sections.push(channelSection);
     }
   }
-  const otherSection = buildDigestSection("Additional channel updates", digest.otherEvents);
+  const otherSection = buildDigestSection("Additional channel updates", digest.otherEvents, 180);
   if (otherSection) {
     sections.push(otherSection);
   }
@@ -285,6 +293,15 @@ function createSeedSubgoal(goal: string, revision: number, timestamp: string): S
     updatedBy: "system",
     revision,
   };
+}
+
+function normalizeExpectedRevision(value: unknown): number | null {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  const normalized = Math.floor(parsed);
+  return normalized > 0 ? normalized : null;
 }
 
 export class LiveSession {
@@ -611,7 +628,14 @@ export class LiveSession {
       return false;
     }
     const ownsDiscoveryStages = agent.preset.policy.ownedStages.includes("open") || agent.preset.policy.ownedStages.includes("researching");
+    const ownsOnlyReviewStage =
+      Array.isArray(agent.preset.policy.ownedStages) &&
+      agent.preset.policy.ownedStages.length > 0 &&
+      agent.preset.policy.ownedStages.every((stage) => stage === "ready_for_review");
     if (!this.isGoalEvent(event) && !this.isOperatorEvent(event) && targetIds.length === 0 && !ownsDiscoveryStages && this.discoveryChannels().has(event.channel)) {
+      return false;
+    }
+    if (ownsOnlyReviewStage && !this.isOperatorEvent(event) && !this.goalBoardNeedsAttention(agent)) {
       return false;
     }
     if (this.shouldIgnoreCompletedAgent(agent, event)) {
@@ -746,6 +770,11 @@ export class LiveSession {
     if (!agent) {
       return;
     }
+    const requestedStages = new Set(
+      (Array.isArray(result.subgoalUpdates) ? result.subgoalUpdates : [])
+        .map((update) => String(update?.stage ?? "").trim())
+        .filter(Boolean),
+    );
     agent.snapshot.turnCount += 1;
     agent.snapshot.lastConsumedSequence = Math.max(Number(agent.snapshot.lastConsumedSequence || 0), consumedSequence);
     const subgoalResult = this.applySubgoalUpdates(agentId, result.subgoalUpdates);
@@ -787,8 +816,39 @@ export class LiveSession {
       : normalizedTargetAgentIds;
     const peerDeferredTargetAgentIds = this.applyPeerContextTargetDeferral(agent, restrictedTargetAgentIds);
     let effectiveTargetAgentIds = this.shouldForceBroadcastOnFirstTurn(agent) ? [] : peerDeferredTargetAgentIds;
+    const allowedTargets = new Set(
+      (Array.isArray(agent.preset.policy.allowedTargetAgentIds) ? agent.preset.policy.allowedTargetAgentIds : [])
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean),
+    );
+    const reviewerId = this.defaultAssigneeForStage("ready_for_review");
+    const routingOwnerIds = [
+      this.defaultAssigneeForStage("ready_for_build"),
+      this.defaultAssigneeForStage("blocked"),
+    ].filter((value): value is string => Boolean(value));
+    const ownsBuildStage = Array.isArray(agent.preset.policy?.ownedStages) && agent.preset.policy.ownedStages.includes("building");
+    const ownsReviewStageOnly =
+      Array.isArray(agent.preset.policy?.ownedStages) &&
+      agent.preset.policy.ownedStages.length > 0 &&
+      agent.preset.policy.ownedStages.every((stage) => stage === "ready_for_review");
+    const isAuditHandoff =
+      ownsBuildStage &&
+      requestedStages.has("ready_for_review") &&
+      !requestedStages.has("blocked") &&
+      !requestedStages.has("researching");
+    if (isAuditHandoff && reviewerId && allowedTargets.has(reviewerId)) {
+      if (effectiveTargetAgentIds.length === 0 || effectiveTargetAgentIds.every((value) => routingOwnerIds.includes(value))) {
+        effectiveTargetAgentIds = [reviewerId];
+      } else if (!effectiveTargetAgentIds.includes(reviewerId)) {
+        effectiveTargetAgentIds = [reviewerId, ...effectiveTargetAgentIds];
+      }
+    }
     if (subgoalResult.blockedBuildPromotion) {
       effectiveTargetAgentIds = effectiveTargetAgentIds.filter((value) => value !== "implementer_1");
+    }
+    if (ownsReviewStageOnly && requestedStages.has("done") && effectiveTargetAgentIds.length === 0) {
+      result.shouldReply = false;
+      result.teamMessage = "";
     }
 
     const eventMetadata = {
@@ -931,20 +991,33 @@ export class LiveSession {
       return null;
     }
     const id = String(update.id ?? "").trim() || null;
+    const expectedRevision = normalizeExpectedRevision(update.expectedRevision);
     const title = String(update.title ?? "").trim() || null;
     const summary = String(update.summary ?? "").trim() || null;
     const stage = update.stage ? normalizeSubgoalStage(update.stage, "researching") : null;
     const assigneeAgentId = String(update.assigneeAgentId ?? "").trim() || null;
-    if (!id && !title && !summary && !stage && !assigneeAgentId) {
+    if (!id && !expectedRevision && !title && !summary && !stage && !assigneeAgentId) {
       return null;
     }
     return {
       id,
+      expectedRevision,
       title,
       summary,
       stage,
       assigneeAgentId,
     };
+  }
+
+  private shouldIgnoreStaleSubgoalUpdate(existing: SessionSubgoal, update: SubgoalUpdate): boolean {
+    if (!update.id) {
+      return false;
+    }
+    const expectedRevision = normalizeExpectedRevision(update.expectedRevision);
+    if (!expectedRevision) {
+      return false;
+    }
+    return expectedRevision !== Number(existing.revision || 0);
   }
 
   private applySubgoalUpdates(agentId: string, updates: SubgoalUpdate[] | undefined): SubgoalUpdateResult {
@@ -958,10 +1031,13 @@ export class LiveSession {
     for (const update of normalized.slice(0, 8)) {
       const existingIndex = update.id ? this.subgoals.findIndex((subgoal) => subgoal.id === update.id) : -1;
       const timestamp = nowIso();
-      this.subgoalRevision += 1;
       if (existingIndex >= 0) {
         const existing = this.subgoals[existingIndex];
         let requestedStage = update.stage ? normalizeSubgoalStage(update.stage, existing.stage) : existing.stage;
+        if (this.shouldIgnoreStaleSubgoalUpdate(existing, update)) {
+          continue;
+        }
+        this.subgoalRevision += 1;
         const explicitAssignee = update.assigneeAgentId != null
           ? (update.assigneeAgentId && this.agents.has(update.assigneeAgentId) ? update.assigneeAgentId : null)
           : null;
@@ -988,6 +1064,7 @@ export class LiveSession {
 
       let requestedStage = normalizeSubgoalStage(update.stage, "researching");
       const id = this.nextSubgoalId();
+      this.subgoalRevision += 1;
       if (agentId === "coordinator_1" && requestedStage === "building") {
         requestedStage = "ready_for_build";
         blockedBuildPromotion = true;
@@ -1053,8 +1130,9 @@ export class LiveSession {
     }
     const lines = this.subgoals.map((subgoal) => {
       const assignee = subgoal.assigneeAgentId ? ` assignee=${subgoal.assigneeAgentId}` : "";
+      const revision = ` rev=${subgoal.revision}`;
       const focus = this.actionableSubgoalsForAgent(agent).some((item) => item.id === subgoal.id) ? " focus=true" : "";
-      return `- ${subgoal.id} [${subgoal.stage}]${assignee}${focus}: ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}`;
+      return `- ${subgoal.id}${revision} [${subgoal.stage}]${assignee}${focus}: ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}`;
     });
     return lines.join("\n");
   }
@@ -1065,7 +1143,7 @@ export class LiveSession {
       return "(none)";
     }
     return actionable
-      .map((subgoal) => `- ${subgoal.id} [${subgoal.stage}] ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}`)
+      .map((subgoal) => `- ${subgoal.id} rev=${subgoal.revision} [${subgoal.stage}] ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}`)
       .join("\n");
   }
 

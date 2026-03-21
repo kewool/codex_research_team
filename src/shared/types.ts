@@ -95,6 +95,7 @@ export interface SessionSubgoal {
 
 export interface SubgoalUpdate {
   id?: string | null;
+  expectedRevision?: number | null;
   title?: string | null;
   summary?: string | null;
   stage?: SubgoalStage | null;

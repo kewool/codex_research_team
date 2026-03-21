@@ -74,8 +74,13 @@ function operatingModeLines(agent: AgentPreset): string[] {
   ];
 }
 
-function workspaceGuardrailLines(): string[] {
+function workspaceGuardrailLines(workspacePath: string): string[] {
+  const normalizedWorkspacePath = normalizePath(workspacePath);
   return [
+    `- Your allowed working scope is the selected workspace only: ${normalizedWorkspacePath}. Treat paths outside this workspace as out-of-scope.`,
+    "- Do not create, modify, delete, or publish files outside the selected workspace.",
+    "- Do not introduce or normalize repo-root output trees such as exports/, release/, publish/, or other sibling directories.",
+    "- If existing workspace code tries to write outside the selected workspace, do not implement or preserve that behavior. Treat it as a workflow risk to report and keep outputs workspace-relative instead.",
     "- Do not open, print, or dump raw binary/media files directly. Treat audio, wav, mp3, image, and other large binaries as opaque assets unless a specific tool is required.",
     "- Prefer metadata, filenames, directory listings, and targeted text/code reads over broad workspace scans.",
     "- Avoid generated artifacts and scratch directories such as tmp_*, output folders, caches, or derived stems unless they are the explicit subject of the turn.",
@@ -149,7 +154,7 @@ export class CodexAgentProcess {
       "Operating rules:",
       `- Reply in ${this.language}.`,
       ...operatingModeLines(this.agent),
-      ...workspaceGuardrailLines(),
+      ...workspaceGuardrailLines(this.workspacePath),
       ...routingGuidanceLines(this.agent, this.config.agents),
       "- Other agents and the operator will send more messages later in this same session.",
       "- This runtime uses a goal board with subgoals and stage transitions. Do your work through the goal board, not only through free-form team chat.",
@@ -210,11 +215,14 @@ export class CodexAgentProcess {
       "Protocol reminder:",
       `- Reply in ${this.language}.`,
       ...operatingModeLines(this.agent),
-      ...workspaceGuardrailLines(),
+      ...workspaceGuardrailLines(this.workspacePath),
       ...routingGuidanceLines(this.agent, this.config.agents),
       "- Only give public working notes. Do not expose hidden reasoning.",
       "- The goal board is the source of truth for progress. Use subgoalUpdates to create, refine, assign, or advance subgoals whenever the state of the work has changed.",
       "- Prefer updating the relevant subgoal over merely describing progress in free text.",
+      "- When you update an existing subgoal by id, include expectedRevision and copy the rev number shown in the Goal board or Actionable subgoals view. If the revision has changed since you read it, the runtime may ignore the stale state mutation instead of overwriting newer work.",
+      "- Keep teamMessage compact: one short delta or handoff, ideally 1-4 sentences. Put durable state into subgoalUpdates.summary instead of repeating long evidence dumps in teamMessage.",
+      "- Do not paste long command transcripts, multi-paragraph audits, or large code excerpts into teamMessage. Summarize the conclusion, the changed evidence, and the next action.",
       "- Reply only when you add materially new evidence, a concrete contradiction, or a decision-changing action.",
       "- Do not reply just to agree, restate, lightly refine, or say that you support a prior point.",
       "- If the primary trigger is a targeted message from a specific agent and your response is mainly for that sender, target your reply back to that sender by default.",
@@ -227,9 +235,10 @@ export class CodexAgentProcess {
       "- When one specific agent should act next, use targetAgentId instead of relying only on broadcast.",
       "- When two or more specific agents should act next, use targetAgentIds for a multi-target handoff.",
       "- Use subgoal stage meanings consistently: open/researching for discovery, ready_for_build when research is sufficient for routing, building for active implementation, ready_for_review when code is ready to audit, done when accepted, blocked when a real blocker prevents progress.",
+      "- Implementation and review can reopen research. If downstream evidence changes assumptions, acceptance criteria, benchmark/eval contracts, or operator workflow, update the relevant subgoal back to researching instead of keeping it trapped in a build/review loop.",
       "Return exactly this shape between the XML tags:",
       "<codex_team-response>",
-      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"id":"sg-1","title":"short subgoal title","summary":"what changed","stage":"researching","assigneeAgentId":null}],"completion":"continue"}',
+      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"id":"sg-1","expectedRevision":3,"title":"short subgoal title","summary":"what changed","stage":"researching","assigneeAgentId":null}],"completion":"continue"}',
       "</codex_team-response>",
       `Finish with this token on its own line: ${token}`,
     ].join("\n\n");
@@ -476,8 +485,9 @@ export class CodexAgentProcess {
     }
     if (this.config.defaults.dangerousBypass) {
       codexArgs.push("--dangerously-bypass-approvals-and-sandbox");
-    } else if (this.config.defaults.sandbox === "workspace-write" && this.config.defaults.approvalPolicy === "on-request") {
-      codexArgs.push("--full-auto");
+    } else {
+      codexArgs.push("-s", this.config.defaults.sandbox);
+      codexArgs.push("-a", this.config.defaults.approvalPolicy);
     }
     codexArgs.push(wrapperPrompt);
 
@@ -572,6 +582,9 @@ function normalizeParsedTurnResult(parsed: Partial<AgentTurnResult> & { teamMess
         .filter((item) => item && typeof item === "object")
         .map((item) => ({
           id: String((item as Record<string, unknown>).id ?? "").trim() || null,
+          expectedRevision: Number.isFinite(Number((item as Record<string, unknown>).expectedRevision))
+            ? Math.max(1, Number((item as Record<string, unknown>).expectedRevision))
+            : null,
           title: String((item as Record<string, unknown>).title ?? "").trim() || null,
           summary: String((item as Record<string, unknown>).summary ?? "").trim() || null,
           stage: String((item as Record<string, unknown>).stage ?? "").trim() || null,
