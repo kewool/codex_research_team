@@ -143,6 +143,45 @@ export function normalizeAgentPolicy(policy: Partial<AgentPolicy> | undefined): 
   };
 }
 
+function agentIdsOwningAnyStage(agents: AgentPreset[], stages: SubgoalStage[]): string[] {
+  const wanted = new Set<SubgoalStage>(stages);
+  return agents
+    .filter((agent) => Array.isArray(agent.policy?.ownedStages) && agent.policy.ownedStages.some((stage) => wanted.has(stage)))
+    .map((agent) => agent.id);
+}
+
+function otherAgentIds(agentIds: string[], selfId: string): string[] {
+  return agentIds.filter((agentId) => agentId !== selfId);
+}
+
+function applyDefaultTargetPolicies(agents: AgentPreset[]): AgentPreset[] {
+  const researchAgentIds = agentIdsOwningAnyStage(agents, ["open", "researching"]);
+  const coordinationOwnerIds = agentIdsOwningAnyStage(agents, ["ready_for_build", "blocked"]);
+  const buildOwnerIds = agentIdsOwningAnyStage(agents, ["building"]);
+  const reviewOwnerIds = agentIdsOwningAnyStage(agents, ["ready_for_review"]);
+
+  for (const agent of agents) {
+    const ownedStages = Array.isArray(agent.policy?.ownedStages) ? agent.policy.ownedStages : [];
+    if (ownedStages.includes("open") || ownedStages.includes("researching")) {
+      agent.policy.allowedTargetAgentIds = normalizeChannelList([...otherAgentIds(researchAgentIds, agent.id), ...coordinationOwnerIds]);
+      continue;
+    }
+    if (ownedStages.includes("ready_for_build") || ownedStages.includes("blocked")) {
+      agent.policy.allowedTargetAgentIds = normalizeChannelList([...researchAgentIds, ...buildOwnerIds, ...reviewOwnerIds]);
+      continue;
+    }
+    if (ownedStages.includes("building")) {
+      agent.policy.allowedTargetAgentIds = normalizeChannelList([...reviewOwnerIds, ...coordinationOwnerIds]);
+      continue;
+    }
+    if (ownedStages.includes("ready_for_review")) {
+      agent.policy.allowedTargetAgentIds = normalizeChannelList([...buildOwnerIds, ...coordinationOwnerIds]);
+    }
+  }
+
+  return agents;
+}
+
 function defaultAgents(defaults: AppDefaults): AgentPreset[] {
   const goal = defaults.goalChannel;
   const operator = defaults.operatorChannel;
@@ -152,7 +191,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
   const buildChannel = channels[2] || channels[1] || channels[0] || "implementation";
   const auditChannel = channels[3] || channels[2] || channels[1] || channels[0] || "review";
 
-  return [
+  const agents: AgentPreset[] = [
     {
       id: "researcher_1",
       name: "researcher_1",
@@ -172,12 +211,12 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
           "Do not treat implementation start as the end of research. If implementation or review changes the architecture assumptions, acceptance criteria, benchmark/eval contract, or operator workflow for a subgoal, reopen that subgoal in researching and push the changed evidence back into research.",
           "Stay at the research and planning layer by default. Do not spend turns on line-by-line code review, file-by-file bug hunting, or detailed test edits unless the operator explicitly asks for that depth.",
           "Treat the codebase as evidence, not as the main subject. Use it to confirm architecture, workflow, and product constraints, then return to the higher-level decision.",
-          "Do not target implementer_1 or reviewer_1 directly for raw research. When a subgoal is mature enough for implementation, update that subgoal to ready_for_build and let coordinator_1 route it.",
-          "Use direct targets mainly for researcher-to-researcher questions or to flag coordinator_1 after you have advanced a subgoal on the goal board.",
+          "Do not target build owners or review owners directly for raw research. When a subgoal is mature enough for implementation, update that subgoal to ready_for_build and let a coordination owner route it.",
+          "Use direct targets mainly for researcher-to-researcher questions or to flag a coordination owner after you have advanced a subgoal on the goal board.",
           "If no subgoal, plan, or action owner changed after your check, prefer shouldReply=false.",
         ],
         ownedStages: ["open", "researching"],
-        allowedTargetAgentIds: ["researcher_2", "researcher_3", "coordinator_1"],
+        allowedTargetAgentIds: [],
         forceBroadcastOnFirstTurn: true,
       },
     },
@@ -200,12 +239,12 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
           "If implementation or review exposes a new failure mode, broken assumption, changed acceptance criteria, benchmark/eval contract mismatch, or workflow gap, reopen that subgoal in researching instead of letting it stay in a pure build/review loop.",
           "Focus on requirements, evaluation criteria, data assumptions, and likely breakpoints rather than detailed code-review findings.",
           "Treat code inspection as a way to confirm risk, not as the deliverable. If you notice a code-level defect, reduce it to one concise failure mode and hand it off instead of producing a deep audit.",
-          "Do not target implementer_1 or reviewer_1 directly for raw research. When a subgoal is mature enough for implementation, update that subgoal to ready_for_build and let coordinator_1 route it.",
-          "Use direct targets mainly for researcher-to-researcher questions or to flag coordinator_1 after you have advanced a subgoal on the goal board.",
+          "Do not target build owners or review owners directly for raw research. When a subgoal is mature enough for implementation, update that subgoal to ready_for_build and let a coordination owner route it.",
+          "Use direct targets mainly for researcher-to-researcher questions or to flag a coordination owner after you have advanced a subgoal on the goal board.",
           "If no subgoal, plan, or action owner changed after your check, prefer shouldReply=false.",
         ],
         ownedStages: ["open", "researching"],
-        allowedTargetAgentIds: ["researcher_1", "researcher_3", "coordinator_1"],
+        allowedTargetAgentIds: [],
         forceBroadcastOnFirstTurn: true,
       },
     },
@@ -228,12 +267,12 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
           "If implementation or review reveals that the operator workflow, acceptance semantics, or handoff contract was wrong or incomplete, reopen the affected subgoal in researching and restate the changed workflow requirement clearly.",
           "Avoid dropping into patch-level implementation review by default. Prefer system behavior, pipeline shape, tooling flow, and what the implementer or reviewer should validate next.",
           "Do not spend turns cataloging code/schema/path defects in detail. Convert them into workflow or operator-facing contract risks and move back up a level.",
-          "Do not target implementer_1 or reviewer_1 directly for raw research. When a subgoal is mature enough for implementation, update that subgoal to ready_for_build and let coordinator_1 route it.",
-          "Use direct targets mainly for researcher-to-researcher questions or to flag coordinator_1 after you have advanced a subgoal on the goal board.",
+          "Do not target build owners or review owners directly for raw research. When a subgoal is mature enough for implementation, update that subgoal to ready_for_build and let a coordination owner route it.",
+          "Use direct targets mainly for researcher-to-researcher questions or to flag a coordination owner after you have advanced a subgoal on the goal board.",
           "If no subgoal, plan, or action owner changed after your check, prefer shouldReply=false.",
         ],
         ownedStages: ["open", "researching"],
-        allowedTargetAgentIds: ["researcher_1", "researcher_2", "coordinator_1"],
+        allowedTargetAgentIds: [],
         forceBroadcastOnFirstTurn: true,
       },
     },
@@ -250,7 +289,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         promptGuidance: [
           "Act as the synthesis and routing layer for the goal board.",
           "Watch for subgoals that become ready_for_build or blocked, resolve conflicts, and decide the next owner.",
-          "When research converges, move only the narrowest executable slice from ready_for_build to building and assign it to implementer_1 with a concrete handoff.",
+          "When research converges, move only the narrowest executable slice from ready_for_build to building and assign it to the current build owner with a concrete handoff.",
           "Treat decisionState as a hard gate: only move a subgoal to building when its decisionState is resolved. If the contract is still disputed, keep it in researching or ready_for_build and name the unresolved question.",
           "Do not push every promising research branch into building at once. Leave additional buildable work in ready_for_build so researchers can keep refining it while implementation proceeds.",
           "Keep the goal board compact. Merge overlapping ready_for_build items instead of letting multiple near-duplicate handoff cards accumulate.",
@@ -264,7 +303,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
           "Prefer shouldReply=false when the goal board did not materially change and no new action owner needs to be assigned.",
         ],
         ownedStages: ["ready_for_build", "blocked"],
-        allowedTargetAgentIds: ["researcher_1", "researcher_2", "researcher_3", "implementer_1", "reviewer_1"],
+        allowedTargetAgentIds: [],
       },
     },
     {
@@ -281,14 +320,14 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
           "Convert subgoals in building into concrete changes in the workspace.",
           "Advance a subgoal to ready_for_review when implementation is ready to audit, or blocked when execution reveals a real blocker.",
           "If you discover that the assigned build slice was based on an unresolved or contradictory contract, move the subgoal back to researching, set decisionState to disputed, and include a precise reopenReason instead of pushing forward.",
-          "If execution shows that the research assumptions, acceptance criteria, benchmark/eval contract, or workflow expectations were wrong or incomplete, do not just keep coding. Surface the changed evidence and send the subgoal back upstream through coordinator_1.",
-          "When the build is actually ready to audit, hand it to reviewer_1. Use coordinator_1 only when the scope, assumptions, or routing need to change upstream.",
+          "If execution shows that the research assumptions, acceptance criteria, benchmark/eval contract, or workflow expectations were wrong or incomplete, do not just keep coding. Surface the changed evidence and send the subgoal back upstream through a coordination owner.",
+          "When the build is actually ready to audit, hand it to the current review owner. Use a coordination owner only when the scope, assumptions, or routing need to change upstream.",
           "Keep code changes and generated artifacts inside the selected workspace. Do not add repo-level export or publication paths.",
-          "If the plan is unclear or conflicting, target coordinator_1 instead of pulling every researcher directly into implementation details.",
-          "When a validation-only response is needed, target reviewer_1 instead of broadcasting broadly.",
+          "If the plan is unclear or conflicting, target a coordination owner instead of pulling every researcher directly into implementation details.",
+          "When a validation-only response is needed, target a review owner instead of broadcasting broadly.",
         ],
         ownedStages: ["building"],
-        allowedTargetAgentIds: ["reviewer_1", "coordinator_1"],
+        allowedTargetAgentIds: [],
       },
     },
     {
@@ -304,17 +343,19 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
         promptGuidance: [
           "Audit subgoals in ready_for_review for bugs, regressions, missing tests, and weak assumptions.",
           "Do not enter early planning or coordination loops. Stay idle until a subgoal is actually ready_for_review, unless the operator directly intervenes.",
-          "If a build passes review, move that subgoal to done. If fixes are required, move it back to building and target implementer_1.",
+          "If a build passes review, move that subgoal to done. If fixes are required, move it back to building and target the current build owner.",
           "If review simply accepts a subgoal and no further actor needs a handoff, prefer shouldReply=false and let the goal board/state change carry the completion.",
-          "If review shows the problem was framed incorrectly or the acceptance contract itself is wrong, send it back upstream by moving the affected subgoal to researching or blocked and targeting coordinator_1.",
-          "When review reopens a subgoal, mark decisionState disputed and state the exact reopenReason so coordinator_1 cannot route it as resolved build work again.",
+          "If review shows the problem was framed incorrectly or the acceptance contract itself is wrong, send it back upstream by moving the affected subgoal to researching or blocked and targeting a coordination owner.",
+          "When review reopens a subgoal, mark decisionState disputed and state the exact reopenReason so a coordination owner cannot route it as resolved build work again.",
           "If you uncover a deeper planning gap, mark the subgoal blocked and include the missing assumption or unresolved risk.",
         ],
         ownedStages: ["ready_for_review"],
-        allowedTargetAgentIds: ["implementer_1"],
+        allowedTargetAgentIds: [],
       },
     },
   ];
+
+  return applyDefaultTargetPolicies(agents);
 }
 
 export function createDefaultConfig(root = process.cwd()): AppConfig {
@@ -333,7 +374,7 @@ export function createDefaultConfig(root = process.cwd()): AppConfig {
     serverPort: 4280,
     runsDir,
     workspacesDir,
-    codexCommand: "C:/Program Files/nodejs/codex.cmd",
+    codexCommand: "codex",
     codexHomeMode: "project",
     codexAuthMode: "mirror-global",
     codexHomeDir,

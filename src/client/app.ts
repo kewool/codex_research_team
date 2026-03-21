@@ -24,7 +24,6 @@ const FEED_PAGE_SIZE = 40;
 const MAX_VISIBLE_FEED_ITEMS = 120;
 const DEFAULT_HISTORY_PAGE_SIZE = 20;
 const DEFAULT_MAX_VISIBLE_HISTORY_ITEMS = 80;
-const SUBGOAL_STAGES = ["open", "researching", "ready_for_build", "building", "ready_for_review", "done", "blocked"];
 let renderQueued = false;
 type ScrollAnchorMode = "append" | "prepend";
 type ScrollAnchorSnapshot = {
@@ -206,6 +205,26 @@ function escapeHtml(value: unknown): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function availableSubgoalStages(): string[] {
+  const fromSnapshot = Array.isArray(state.snapshot?.subgoalStages)
+    ? state.snapshot.subgoalStages.map((value: unknown) => String(value ?? "").trim()).filter(Boolean)
+    : [];
+  if (fromSnapshot.length > 0) {
+    return [...new Set(fromSnapshot)];
+  }
+  const fromPolicies = Array.isArray(state.snapshot?.config?.agents)
+    ? state.snapshot.config.agents.flatMap((agent: AnyObject) =>
+        Array.isArray(agent?.policy?.ownedStages)
+          ? agent.policy.ownedStages.map((value: unknown) => String(value ?? "").trim()).filter(Boolean)
+          : []
+      )
+    : [];
+  const fromSession = state.route.name === "session" && Array.isArray(state.sessionData?.[state.route.sessionId]?.snapshot?.subgoals)
+    ? state.sessionData[state.route.sessionId].snapshot.subgoals.map((subgoal: AnyObject) => String(subgoal?.stage ?? "").trim()).filter(Boolean)
+    : [];
+  return [...new Set([...fromPolicies, ...fromSession])];
 }
 
 function renderHint(text: string): string {
@@ -939,7 +958,7 @@ function renderOptionCheckboxPicker(attributeName: string, options: string[], se
 function renderStageCheckboxPicker(attributeName: string, index: number, selectedValues: string[]): string {
   return `
     <div class="channel-picker">
-      ${SUBGOAL_STAGES.map((stage) => `
+      ${availableSubgoalStages().map((stage) => `
         <label class="channel-chip">
           <input type="checkbox" ${attributeName}="${index}" value="${escapeHtml(stage)}" ${selectedValues.includes(stage) ? "checked" : ""} />
           <span>${escapeHtml(stage)}</span>

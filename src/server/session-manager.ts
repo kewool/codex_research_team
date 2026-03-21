@@ -1,7 +1,7 @@
 ﻿// @ts-nocheck
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { AppConfig, RootSnapshot, StartSessionRequest } from "../shared/types";
+import { AppConfig, RootSnapshot, StartSessionRequest, SUBGOAL_STAGES } from "../shared/types";
 import { defaultListenChannels, defaultPublishChannel, emptyAgentPolicy, loadConfig, normalizeAgentPolicy, normalizeDefaults, saveConfig } from "./config";
 import { loadSavedSession, loadSavedSessions, openSessionFiles, resolveSessionRoot } from "./storage";
 import { slugify } from "./utils";
@@ -50,6 +50,7 @@ export class SessionManager {
     const preferredHome = effectiveCodexHomeDir(this.config);
     return {
       config: this.config,
+      subgoalStages: [...SUBGOAL_STAGES],
       sessions: [...active, ...saved].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))),
       modelCatalog: loadCodexModelCatalog(preferredHome),
       mcpCatalog: loadCodexMcpCatalog(preferredHome),

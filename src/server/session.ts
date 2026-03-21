@@ -1068,6 +1068,11 @@ export class LiveSession {
     return match?.id ?? null;
   }
 
+  private agentOwnsStage(agentId: string, stage: SubgoalStage): boolean {
+    const runtime = this.agents.get(agentId);
+    return Boolean(runtime && Array.isArray(runtime.preset.policy?.ownedStages) && runtime.preset.policy.ownedStages.includes(stage));
+  }
+
   private normalizeStageForAssignee(id: string | null, stage: SubgoalStage, currentSubgoalId?: string): SubgoalStage {
     if (!id || stage !== "building") {
       return stage;
@@ -1311,7 +1316,7 @@ export class LiveSession {
         blockedBuildPromotion = true;
         buildGateMessage = `Build promotion blocked for ${id}: unresolved contradictions remain. Mark the subgoal decisionState=resolved before sending it to building.`;
       }
-      if (agentId === "coordinator_1" && requestedStage === "building") {
+      if (requestedStage === "building" && !this.agentOwnsStage(agentId, "building")) {
         requestedStage = "ready_for_build";
         blockedBuildPromotion = true;
       }

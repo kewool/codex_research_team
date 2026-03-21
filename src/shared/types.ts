@@ -227,6 +227,7 @@ export interface CodexUsageStatus {
 
 export interface RootSnapshot {
   config: AppConfig;
+  subgoalStages: SubgoalStage[];
   sessions: SessionSnapshot[];
   modelCatalog: ModelCatalog;
   mcpCatalog: McpCatalog;
