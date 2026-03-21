@@ -477,7 +477,11 @@ export class CodexAgentProcess {
       "If you use a shell command to read it on Windows, prefer a UTF-8 safe no-profile read.",
     ].join(" ");
 
-    const codexArgs: string[] = ["exec", "--json", "--skip-git-repo-check", "-C", this.workspacePath];
+    const codexArgs: string[] = [];
+    if (!this.config.defaults.dangerousBypass) {
+      codexArgs.push("-a", this.config.defaults.approvalPolicy);
+    }
+    codexArgs.push("exec", "--json", "--skip-git-repo-check", "-C", this.workspacePath);
     if (effectiveModel) {
       codexArgs.push("-m", effectiveModel);
     }
@@ -489,7 +493,6 @@ export class CodexAgentProcess {
       codexArgs.push("--dangerously-bypass-approvals-and-sandbox");
     } else {
       codexArgs.push("-s", this.config.defaults.sandbox);
-      codexArgs.push("-a", this.config.defaults.approvalPolicy);
     }
     codexArgs.push(wrapperPrompt);
 

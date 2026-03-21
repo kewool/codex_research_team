@@ -1,5 +1,5 @@
 ﻿// @ts-nocheck
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -100,4 +100,140 @@ export function loadCodexMcpCatalog(preferredHome?: string | null): { servers: s
       ? "global_config"
       : "none";
   return { servers, source };
+}
+
+function toIsoFromEpochSeconds(value: unknown): string | null {
+  const seconds = Number(value ?? 0);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return null;
+  }
+  return new Date(seconds * 1000).toISOString();
+}
+
+function readSessionJsonlCandidates(baseHome: string): Array<{ path: string; mtimeMs: number }> {
+  const sessionsRoot = join(baseHome, "sessions");
+  if (!existsSync(sessionsRoot)) {
+    return [];
+  }
+  const candidates: Array<{ path: string; mtimeMs: number }> = [];
+  for (const yearEntry of readdirSync(sessionsRoot, { withFileTypes: true })) {
+    if (!yearEntry.isDirectory()) {
+      continue;
+    }
+    const yearPath = join(sessionsRoot, yearEntry.name);
+    for (const monthEntry of readdirSync(yearPath, { withFileTypes: true })) {
+      if (!monthEntry.isDirectory()) {
+        continue;
+      }
+      const monthPath = join(yearPath, monthEntry.name);
+      for (const dayEntry of readdirSync(monthPath, { withFileTypes: true })) {
+        if (!dayEntry.isDirectory()) {
+          continue;
+        }
+        const dayPath = join(monthPath, dayEntry.name);
+        for (const fileEntry of readdirSync(dayPath, { withFileTypes: true })) {
+          if (!fileEntry.isFile() || !fileEntry.name.endsWith(".jsonl")) {
+            continue;
+          }
+          const filePath = join(dayPath, fileEntry.name);
+          let mtimeMs = 0;
+          try {
+            mtimeMs = statSync(filePath).mtimeMs;
+          } catch {
+            mtimeMs = 0;
+          }
+          candidates.push({ path: filePath, mtimeMs });
+        }
+      }
+    }
+  }
+  return candidates.sort((left, right) => right.mtimeMs - left.mtimeMs).slice(0, 20);
+}
+
+function readLatestRateLimitsFromFile(filePath: string): { observedAt: string | null; payload: any | null } {
+  try {
+    const raw = readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+    const lines = raw.split("\n");
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = String(lines[index] || "").trim();
+      if (!line) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(line);
+        const payload = parsed?.payload;
+        if (parsed?.type === "event_msg" && payload?.type === "token_count" && payload?.rate_limits) {
+          return {
+            observedAt: String(parsed?.timestamp ?? "").trim() || null,
+            payload,
+          };
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    return { observedAt: null, payload: null };
+  }
+  return { observedAt: null, payload: null };
+}
+
+function mapRateLimitWindow(value: any): { usedPercent: number | null; windowMinutes: number | null; resetsAt: string | null } | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const usedPercent = Number(value.used_percent);
+  const windowMinutes = Number(value.window_minutes);
+  return {
+    usedPercent: Number.isFinite(usedPercent) ? usedPercent : null,
+    windowMinutes: Number.isFinite(windowMinutes) ? windowMinutes : null,
+    resetsAt: toIsoFromEpochSeconds(value.resets_at),
+  };
+}
+
+export function loadCodexUsageStatus(preferredHome?: string | null): {
+  codexHomeDir: string;
+  sourceFile: string | null;
+  observedAt: string | null;
+  available: boolean;
+  planType: string | null;
+  limitId: string | null;
+  limitName: string | null;
+  credits: number | null;
+  primary: { usedPercent: number | null; windowMinutes: number | null; resetsAt: string | null } | null;
+  secondary: { usedPercent: number | null; windowMinutes: number | null; resetsAt: string | null } | null;
+} {
+  const home = codexHome(preferredHome);
+  for (const candidate of readSessionJsonlCandidates(home)) {
+    const found = readLatestRateLimitsFromFile(candidate.path);
+    if (!found.payload?.rate_limits) {
+      continue;
+    }
+    const rateLimits = found.payload.rate_limits;
+    const credits = Number(rateLimits.credits);
+    return {
+      codexHomeDir: home,
+      sourceFile: candidate.path,
+      observedAt: found.observedAt,
+      available: true,
+      planType: String(rateLimits.plan_type ?? "").trim() || null,
+      limitId: String(rateLimits.limit_id ?? "").trim() || null,
+      limitName: String(rateLimits.limit_name ?? "").trim() || null,
+      credits: Number.isFinite(credits) ? credits : null,
+      primary: mapRateLimitWindow(rateLimits.primary),
+      secondary: mapRateLimitWindow(rateLimits.secondary),
+    };
+  }
+  return {
+    codexHomeDir: home,
+    sourceFile: null,
+    observedAt: null,
+    available: false,
+    planType: null,
+    limitId: null,
+    limitName: null,
+    credits: null,
+    primary: null,
+    secondary: null,
+  };
 }

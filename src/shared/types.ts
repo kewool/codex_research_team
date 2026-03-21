@@ -54,6 +54,7 @@ export interface AppDefaults {
   workspacesDir: string;
   codexCommand: string;
   codexHomeMode: "project" | "global";
+  codexAuthMode: "mirror-global" | "separate";
   codexHomeDir: string;
   model: string | null;
   modelReasoningEffort: string | null;
@@ -166,6 +167,7 @@ export interface SessionSnapshot {
   createdAt: string;
   updatedAt: string;
   status: SessionStatus;
+  isLive: boolean;
   eventCount: number;
   subgoalRevision: number;
   agentCount: number;
@@ -193,11 +195,43 @@ export interface McpCatalog {
   source: string;
 }
 
+export interface CodexAuthStatus {
+  codexHomeDir: string;
+  codexHomeMode: "project" | "global";
+  codexAuthMode: "mirror-global" | "separate";
+  loggedIn: boolean;
+  summary: string;
+  rawOutput: string;
+  lastCheckedAt: string;
+  controlsLocked: boolean;
+}
+
+export interface CodexRateLimitWindow {
+  usedPercent: number | null;
+  windowMinutes: number | null;
+  resetsAt: string | null;
+}
+
+export interface CodexUsageStatus {
+  codexHomeDir: string;
+  sourceFile: string | null;
+  observedAt: string | null;
+  available: boolean;
+  planType: string | null;
+  limitId: string | null;
+  limitName: string | null;
+  credits: number | null;
+  primary: CodexRateLimitWindow | null;
+  secondary: CodexRateLimitWindow | null;
+}
+
 export interface RootSnapshot {
   config: AppConfig;
   sessions: SessionSnapshot[];
   modelCatalog: ModelCatalog;
   mcpCatalog: McpCatalog;
+  codexAuthStatus: CodexAuthStatus;
+  codexUsageStatus: CodexUsageStatus;
 }
 
 export interface StartSessionRequest {

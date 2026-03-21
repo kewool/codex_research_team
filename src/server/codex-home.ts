@@ -1,9 +1,22 @@
 // @ts-nocheck
+import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { AppConfig } from "../shared/types";
-import { ensureDir } from "./utils";
+import { AppConfig, CodexAuthStatus } from "../shared/types";
+import { ensureDir, timestampSlug } from "./utils";
+
+const AUTH_ARTIFACTS = [
+  "auth.json",
+  "cap_sid",
+  "internal_storage.json",
+  ".codex-global-state.json",
+];
+
+const SHARED_RUNTIME_FILES = [
+  "version.json",
+  "models_cache.json",
+];
 
 function readText(path: string): string {
   if (!existsSync(path)) {
@@ -136,15 +149,19 @@ function replaceDirectoryIfPresent(sourcePath: string, destinationPath: string):
   cpSync(sourcePath, destinationPath, { recursive: true, force: true });
 }
 
-function syncProjectRuntimeAssets(homeDir: string): void {
+function removePathIfPresent(targetPath: string): void {
+  try {
+    rmSync(targetPath, { recursive: true, force: true });
+  } catch {
+    // ignore
+  }
+}
+
+function syncProjectRuntimeAssets(homeDir: string, options?: { mirrorAuth?: boolean }): void {
   const globalHomeDir = globalCodexHomeDir();
   const mirroredFiles = [
-    "auth.json",
-    "cap_sid",
-    "version.json",
-    "models_cache.json",
-    "internal_storage.json",
-    ".codex-global-state.json",
+    ...SHARED_RUNTIME_FILES,
+    ...((options?.mirrorAuth ?? true) ? AUTH_ARTIFACTS : []),
   ];
 
   for (const fileName of mirroredFiles) {
@@ -155,14 +172,175 @@ function syncProjectRuntimeAssets(homeDir: string): void {
   replaceDirectoryIfPresent(join(globalHomeDir, "vendor_imports"), join(homeDir, "vendor_imports"));
 }
 
-export function syncProjectCodexHome(config: AppConfig): string {
+export function clearProjectAuthArtifacts(homeDir: string): void {
+  for (const fileName of AUTH_ARTIFACTS) {
+    removePathIfPresent(join(homeDir, fileName));
+  }
+}
+
+function codexCommand(config: AppConfig): string {
+  return String(config.defaults.codexCommand || "codex").trim() || "codex";
+}
+
+function codexEnv(config: AppConfig, homeDir: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    CODEX_HOME: homeDir,
+    NO_COLOR: "1",
+    FORCE_COLOR: "0",
+  };
+}
+
+function controlsLocked(config: AppConfig): boolean {
+  return config.defaults.codexHomeMode === "project" && config.defaults.codexAuthMode === "mirror-global";
+}
+
+function quoteForPowerShell(value: string): string {
+  return `'${String(value ?? "").replace(/'/g, "''")}'`;
+}
+
+function runCodexCommandSync(config: AppConfig, homeDir: string, args: string[]): {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  status: number | null;
+  errorMessage: string | null;
+} {
+  try {
+    const command = codexCommand(config);
+    const result = process.platform === "win32"
+      ? spawnSync("powershell.exe", [
+          "-NoProfile",
+          "-Command",
+          `& ${quoteForPowerShell(command)} ${args.join(" ")}`.trim(),
+        ], {
+          cwd: process.cwd(),
+          env: codexEnv(config, homeDir),
+          encoding: "utf8",
+          windowsHide: true,
+        })
+      : spawnSync(command, args, {
+          cwd: process.cwd(),
+          env: codexEnv(config, homeDir),
+          encoding: "utf8",
+          windowsHide: true,
+        });
+    return {
+      ok: !result.error && result.status === 0,
+      stdout: String(result.stdout ?? "").trim(),
+      stderr: String(result.stderr ?? "").trim(),
+      status: result.status ?? null,
+      errorMessage: result.error ? String(result.error.message ?? result.error) : null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      stdout: "",
+      stderr: "",
+      status: null,
+      errorMessage: String((error as Error)?.message ?? error),
+    };
+  }
+}
+
+function authSummaryPrefix(config: AppConfig): string {
+  if (config.defaults.codexHomeMode === "global") {
+    return "Global Codex login";
+  }
+  return config.defaults.codexAuthMode === "mirror-global" ? "Project Codex login (mirrors global)" : "Project Codex login";
+}
+
+export function loadCodexAuthStatus(config: AppConfig): CodexAuthStatus {
+  const homeDir = effectiveCodexHomeDir(config);
+  const result = runCodexCommandSync(config, homeDir, ["login", "status"]);
+  const rawOutput = [result.stdout, result.stderr, result.errorMessage].filter(Boolean).join("\n").trim();
+  const loggedIn = result.ok && /logged in/i.test(rawOutput || "");
+  const summary = rawOutput
+    ? `${authSummaryPrefix(config)}: ${rawOutput}`
+    : `${authSummaryPrefix(config)}: ${loggedIn ? "logged in" : "not logged in"}`;
+  return {
+    codexHomeDir: homeDir,
+    codexHomeMode: config.defaults.codexHomeMode,
+    codexAuthMode: config.defaults.codexAuthMode,
+    loggedIn,
+    summary,
+    rawOutput,
+    lastCheckedAt: new Date().toISOString(),
+    controlsLocked: controlsLocked(config),
+  };
+}
+
+export function launchCodexLogin(config: AppConfig): { message: string; codexHomeDir: string; launcherPath: string; alreadyLoggedIn: boolean } {
+  if (controlsLocked(config)) {
+    throw new Error("Project auth is mirroring the global Codex login. Switch Auth Mode to Separate before using a project-local login.");
+  }
+  const previousStatus = loadCodexAuthStatus(config);
+  const homeDir = syncProjectCodexHome(config);
+  if (process.platform !== "win32") {
+    throw new Error("Interactive Codex login launch is currently implemented only on Windows.");
+  }
+  const launcherDir = join(homeDir, "runtime");
+  ensureDir(launcherDir);
+  const launcherPath = join(launcherDir, `open-login-${timestampSlug()}.cmd`);
+  const launcherText = [
+    "@echo off",
+    "setlocal",
+    `set "CODEX_HOME=${homeDir}"`,
+    `cd /d "${process.cwd()}"`,
+    "echo codex_research_team project login",
+    "echo.",
+    `call "${codexCommand(config)}" login`,
+    "echo.",
+    "echo Login finished. Press any key to close this window.",
+    "pause >nul",
+    "",
+  ].join("\r\n");
+  writeFileSync(launcherPath, launcherText, "utf8");
+  const child = spawn("cmd.exe", [
+    "/c",
+    "start",
+    "",
+    launcherPath,
+  ], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.unref();
+  const launcherInstruction = `If no window appears, run ${launcherPath} manually and then refresh auth status.`;
+  return {
+    message: previousStatus.loggedIn
+      ? `This Codex home is already logged in. A reauthentication launcher was prepared for ${homeDir}. ${launcherInstruction}`
+      : `Prepared a Codex login launcher for ${homeDir}. ${launcherInstruction}`,
+    codexHomeDir: homeDir,
+    launcherPath,
+    alreadyLoggedIn: previousStatus.loggedIn,
+  };
+}
+
+export function logoutCodexHome(config: AppConfig): CodexAuthStatus {
+  if (controlsLocked(config)) {
+    throw new Error("Project auth is mirroring the global Codex login. Switch Auth Mode to Separate before logging out the project home.");
+  }
+  const homeDir = syncProjectCodexHome(config);
+  const result = runCodexCommandSync(config, homeDir, ["logout"]);
+  if (!result.ok) {
+    throw new Error(result.errorMessage || result.stderr || result.stdout || "Codex logout failed.");
+  }
+  return loadCodexAuthStatus(config);
+}
+
+export function syncProjectCodexHome(config: AppConfig, options?: { clearProjectAuth?: boolean }): string {
   const homeDir = effectiveCodexHomeDir(config);
   if (config.defaults.codexHomeMode !== "project") {
     return homeDir;
   }
 
   ensureDir(homeDir);
-  syncProjectRuntimeAssets(homeDir);
+  if (options?.clearProjectAuth) {
+    clearProjectAuthArtifacts(homeDir);
+  }
+  syncProjectRuntimeAssets(homeDir, { mirrorAuth: config.defaults.codexAuthMode !== "separate" });
   const configPath = join(homeDir, "config.toml");
   const globalConfigText = readText(join(globalCodexHomeDir(), "config.toml"));
   const existingConfigText = readText(configPath);

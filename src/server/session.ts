@@ -593,6 +593,7 @@ export class LiveSession {
       createdAt: this.id.slice(0, 15),
       updatedAt: this.updatedAt,
       status: this.status,
+      isLive: true,
       eventCount: this.sequence,
       subgoalRevision: this.subgoalRevision,
       agentCount: this.agents.size,
@@ -647,7 +648,7 @@ export class LiveSession {
         agent.drainTimer = null;
       }
       await agent.process.stop();
-      this.updateAgentSnapshot(agent.preset.id, { status: "stopped", waitingForInput: false });
+      this.updateAgentSnapshot(agent.preset.id, { status: "stopped", waitingForInput: false, lastError: "" });
     }
     this.status = "stopped";
     this.publish("system", "status", "Session stopped by operator.");
@@ -792,7 +793,7 @@ export class LiveSession {
       this.applyTurnResult(agentId, result, maxDigestSequence(digest), agent.inFlightSubgoalRefs);
     } catch (error) {
       const message = String((error as Error).message || "");
-      if (this.status === "stopping" && message.includes("Codex run stopped")) {
+      if ((this.status === "stopping" || this.status === "stopped") && message.includes("Codex run stopped")) {
         return;
       }
       this.applyTurnResult(agentId, {

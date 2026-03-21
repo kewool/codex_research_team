@@ -6,6 +6,7 @@ import { URL } from "node:url";
 import { DEFAULT_CONFIG_PATH } from "./config";
 import { SessionManager } from "./session-manager";
 import { loadAgentHistoryPage, loadSessionEventPage } from "./storage";
+import { launchCodexLogin, loadCodexAuthStatus, logoutCodexHome } from "./codex-home";
 
 function sendJson(response: any, statusCode: number, payload: unknown): void {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
@@ -94,7 +95,19 @@ export async function startWebServer(options?: { configPath?: string; host?: str
 
       if (request.method === "POST" && pathname === "/api/config") {
         const next = await readBody(request);
-        sendJson(response, 200, { config: manager.updateConfig(next) });
+        sendJson(response, 200, { config: manager.updateConfig(next), codexAuthStatus: loadCodexAuthStatus(manager.config) });
+        return;
+      }
+
+      if (request.method === "POST" && pathname === "/api/codex-auth/login") {
+        const result = launchCodexLogin(manager.config);
+        sendJson(response, 200, { ok: true, ...result, codexAuthStatus: loadCodexAuthStatus(manager.config) });
+        return;
+      }
+
+      if (request.method === "POST" && pathname === "/api/codex-auth/logout") {
+        const authStatus = logoutCodexHome(manager.config);
+        sendJson(response, 200, { ok: true, codexAuthStatus: authStatus });
         return;
       }
 

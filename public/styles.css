@@ -688,6 +688,40 @@ label {
   line-height: 1;
 }
 
+.metric-note {
+  display: block;
+  margin-top: 0.5rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(16, 21, 28, 0.42);
+  backdrop-filter: blur(4px);
+}
+
+.modal-card {
+  width: min(520px, calc(100vw - 32px));
+  display: grid;
+  gap: 1rem;
+  padding: 1.1rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+
+.modal-actions {
+  justify-content: flex-end;
+}
+
 .page-section,
 .command-deck,
 .session-hero {

@@ -6,9 +6,9 @@ import { defaultListenChannels, defaultPublishChannel, emptyAgentPolicy, loadCon
 import { loadSavedSession, loadSavedSessions, openSessionFiles, resolveSessionRoot } from "./storage";
 import { slugify } from "./utils";
 import { LiveSession } from "./session";
-import { loadCodexMcpCatalog, loadCodexModelCatalog } from "./model-catalog";
+import { loadCodexMcpCatalog, loadCodexModelCatalog, loadCodexUsageStatus } from "./model-catalog";
 import { ensureCodexWorkspaceTrust } from "./codex-trust";
-import { effectiveCodexHomeDir, syncProjectCodexHome } from "./codex-home";
+import { effectiveCodexHomeDir, loadCodexAuthStatus, syncProjectCodexHome } from "./codex-home";
 
 function normalizeModelList(values: unknown[], current?: string | null): string[] {
   const deduped = new Set<string>();
@@ -37,14 +37,24 @@ export class SessionManager {
   }
 
   snapshot(): RootSnapshot {
-    const active = [...this.activeSessions.values()].map((session) => session.snapshot());
-    const saved = loadSavedSessions(this.config).filter((savedSession) => Boolean(savedSession && savedSession.id) && !this.activeSessions.has(savedSession.id));
+    const active = [...this.activeSessions.values()].map((session) => ({
+      ...session.snapshot(),
+      isLive: true,
+    }));
+    const saved = loadSavedSessions(this.config)
+      .filter((savedSession) => Boolean(savedSession && savedSession.id) && !this.activeSessions.has(savedSession.id))
+      .map((savedSession) => ({
+        ...savedSession,
+        isLive: false,
+      }));
     const preferredHome = effectiveCodexHomeDir(this.config);
     return {
       config: this.config,
       sessions: [...active, ...saved].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))),
       modelCatalog: loadCodexModelCatalog(preferredHome),
       mcpCatalog: loadCodexMcpCatalog(preferredHome),
+      codexAuthStatus: loadCodexAuthStatus(this.config),
+      codexUsageStatus: loadCodexUsageStatus(preferredHome),
     };
   }
 
@@ -109,6 +119,7 @@ export class SessionManager {
   }
 
   updateConfig(next: AppConfig): AppConfig {
+    const previousDefaults = structuredClone(this.config.defaults || {});
     const workspaces = Array.isArray(next.workspaces)
       ? next.workspaces
           .map((workspace) => ({
@@ -167,7 +178,9 @@ export class SessionManager {
 
     if (this.config.defaults.codexHomeMode === "project") {
       mkdirSync(resolve(this.config.defaults.codexHomeDir), { recursive: true });
-      syncProjectCodexHome(this.config);
+      syncProjectCodexHome(this.config, {
+        clearProjectAuth: previousDefaults.codexAuthMode !== "separate" && this.config.defaults.codexAuthMode === "separate",
+      });
     }
 
     if (!this.config.defaults.defaultWorkspaceName || !workspaces.some((workspace) => workspace.name === this.config.defaults.defaultWorkspaceName)) {

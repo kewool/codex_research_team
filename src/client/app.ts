@@ -15,6 +15,10 @@ const state = {
     windowY: 0,
     anchors: {} as Record<string, any>,
   },
+  workspaceCreateModal: {
+    open: false,
+    value: "",
+  },
 };
 const FEED_PAGE_SIZE = 40;
 const MAX_VISIBLE_FEED_ITEMS = 120;
@@ -250,11 +254,19 @@ function currentSession(): AnyObject | null {
 }
 
 function activeSessions(): AnyObject[] {
-  return ((state.snapshot?.sessions as AnyObject[]) || []).filter((session) => session.status !== "stopped");
+  return ((state.snapshot?.sessions as AnyObject[]) || []).filter((session) => Boolean(session.isLive));
 }
 
 function currentConfig(): AnyObject {
   return state.snapshot?.config || { defaults: {}, workspaces: [], agents: [] };
+}
+
+function currentCodexAuthStatus(): AnyObject | null {
+  return (state.snapshot?.codexAuthStatus as AnyObject) || null;
+}
+
+function currentCodexUsageStatus(): AnyObject | null {
+  return (state.snapshot?.codexUsageStatus as AnyObject) || null;
 }
 
 function modelOptions(config: AnyObject): string[] {
@@ -733,6 +745,7 @@ function renderPage(): string {
 function renderDashboardPage(): string {
   const config = state.snapshot?.config;
   const sessions = (state.snapshot?.sessions as AnyObject[]) || [];
+  const usageStatus = currentCodexUsageStatus();
   const workspaceOptions = (config?.workspaces || [])
     .map((workspace: AnyObject) => `<option value="${escapeHtml(workspace.name)}" ${config.defaults.defaultWorkspaceName === workspace.name ? "selected" : ""}>${escapeHtml(workspace.name)}</option>`)
     .join("");
@@ -778,6 +791,8 @@ function renderDashboardPage(): string {
       <article class="metric-card panel"><span class="metric-label">Saved Sessions</span><strong>${escapeHtml(String(sessions.length))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Workspaces</span><strong>${escapeHtml(String((config?.workspaces || []).length))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Agents</span><strong>${escapeHtml(String((config?.agents || []).length))}</strong></article>
+      ${renderUsageMetricCard("5h Limit", usageStatus?.primary, usageStatus)}
+      ${renderUsageMetricCard("Weekly Limit", usageStatus?.secondary, usageStatus)}
     </section>
     <section class="panel page-section">
       <div class="section-head">
@@ -793,6 +808,7 @@ function renderDashboardPage(): string {
 function renderDashboardSessionCard(session: AnyObject): string {
   const waiting = (session.agents || []).filter((agent: AnyObject) => agent.waitingForInput).length;
   const errors = (session.agents || []).filter((agent: AnyObject) => agent.status === "error").length;
+  const liveLabel = session.isLive ? "live" : "saved";
   return `
     <article class="panel session-card">
       <div class="section-head tight">
@@ -803,6 +819,7 @@ function renderDashboardSessionCard(session: AnyObject): string {
         <span class="status-pill ${escapeHtml(session.status)}">${escapeHtml(session.status)}</span>
       </div>
       <div class="session-card-grid">
+        <span><strong>State</strong>${escapeHtml(liveLabel)}</span>
         <span><strong>Workspace</strong>${escapeHtml(session.workspaceName)}</span>
         <span><strong>Updated</strong>${escapeHtml(session.updatedAt)}</span>
         <span><strong>Waiting</strong>${escapeHtml(String(waiting))}</span>
@@ -1025,11 +1042,39 @@ function renderWorkspacesPage(): string {
         </div>
       </section>
     </section>
+    ${renderWorkspaceCreateModal()}
+  `;
+}
+
+function renderWorkspaceCreateModal(): string {
+  if (!state.workspaceCreateModal.open) {
+    return "";
+  }
+  return `
+    <div class="modal-backdrop" data-close-workspace-modal="1">
+      <section class="modal-card" data-workspace-modal-card="1" role="dialog" aria-modal="true" aria-labelledby="workspace-create-title">
+        <div class="section-head tight">
+          <div>
+            <p class="eyebrow">Create</p>
+            <h3 id="workspace-create-title">New Workspace</h3>
+          </div>
+        </div>
+        <label>
+          ${renderLabel("Workspace Name", "A preset will be created immediately under the configured workspaces directory.")}
+          <input id="workspace-create-name" value="${escapeHtml(state.workspaceCreateModal.value)}" placeholder="Workspace name" />
+        </label>
+        <div class="inline-actions modal-actions">
+          <button id="workspace-create-cancel" class="ghost">Cancel</button>
+          <button id="workspace-create-confirm" class="primary">Create Workspace</button>
+        </div>
+      </section>
+    </div>
   `;
 }
 
 function renderSettingsPage(): string {
   const config = currentConfig();
+  const authStatus = currentCodexAuthStatus();
   const options = modelOptions(config);
   const reasoningOptions = reasoningEffortOptions(config);
   const mcpServers = mcpOptions();
@@ -1038,6 +1083,11 @@ function renderSettingsPage(): string {
   const agentCount = (config.agents || []).length;
   const channelCount = channels.length;
   const agentIds = (config.agents || []).map((agent: AnyObject) => String(agent.id || "").trim()).filter(Boolean);
+  const authControlsLocked = Boolean(authStatus?.controlsLocked);
+  const authStatusText = authStatus?.summary || "Codex login status has not been checked yet.";
+  const authStatusRaw = authStatus?.rawOutput || "No additional login output.";
+  const authStatusPill = authStatus?.loggedIn ? "logged in" : "not logged in";
+  const authActionLabel = authStatus?.loggedIn ? "Switch Login" : "Open Login";
   const agentRows = (config.agents || []).map((agent: AnyObject, index: number) => `
     <article class="agent-editor-card">
       <div class="workspace-row-head">
@@ -1120,6 +1170,12 @@ function renderSettingsPage(): string {
               ${["project", "global"].map((item) => `<option value="${item}" ${config.defaults.codexHomeMode === item ? "selected" : ""}>${item}</option>`).join("")}
             </select>
           </label>
+          <label>${renderLabel("Codex Auth Mode", "In project mode, choose whether the project Codex home mirrors the global login or keeps its own separate credentials.")} 
+            <select id="cfg-codex-auth-mode" ${config.defaults.codexHomeMode !== "project" ? "disabled" : ""}>
+              <option value="mirror-global" ${config.defaults.codexAuthMode === "mirror-global" ? "selected" : ""}>Mirror global login</option>
+              <option value="separate" ${config.defaults.codexAuthMode === "separate" ? "selected" : ""}>Separate project login</option>
+            </select>
+          </label>
           <label class="wide">${renderLabel("Codex Home Dir", "Used when Codex Home Mode is project. codex_research_team generates a dedicated config.toml here and can copy only the selected MCP servers into it.")}<input id="cfg-codex-home-dir" value="${escapeHtml(String(config.defaults.codexHomeDir || ""))}" /></label>
           <label>${renderLabel("Default Model", "Fallback model when an agent does not specify its own override.")}${renderModelSelect('id="cfg-model"', options, config.defaults.model, "No default model")}</label>
           <label>${renderLabel("Reasoning Effort", "Default model reasoning effort passed into Codex for every agent turn unless you change the runtime again later.")}${renderReasoningEffortSelect('id="cfg-reasoning-effort"', reasoningOptions, config.defaults.modelReasoningEffort, "Use Codex default")}</label>
@@ -1133,6 +1189,25 @@ function renderSettingsPage(): string {
               ${["untrusted", "on-request", "on-failure", "never"].map((item) => `<option value="${item}" ${config.defaults.approvalPolicy === item ? "selected" : ""}>${item}</option>`).join("")}
             </select>
           </label>
+          <div class="wide auto-models-box">
+            <div class="section-head tight">
+              <div>
+                <span>Codex Login ${renderHint("Status is checked against the active Codex home. In project mode with separate login, use Open Login to authenticate that project home directly.")}</span>
+                <p class="muted">${escapeHtml(authStatusText)}</p>
+              </div>
+              <div class="inline-actions">
+                <button id="refresh-auth-status" class="ghost tiny">Refresh Status</button>
+                <button id="open-codex-login" class="ghost tiny" ${authControlsLocked ? "disabled" : ""}>${escapeHtml(authActionLabel)}</button>
+                <button id="codex-logout" class="ghost tiny" ${authControlsLocked ? "disabled" : ""}>Logout</button>
+              </div>
+            </div>
+            <div class="hero-meta compact">
+              <span class="status-pill ${authStatus?.loggedIn ? "idle" : "stopped"}">${escapeHtml(authStatusPill)}</span>
+              <span>${escapeHtml(String(authStatus?.codexHomeDir || config.defaults.codexHomeDir || ""))}</span>
+            </div>
+            ${authControlsLocked ? `<p class="muted">Project auth is currently mirroring the global Codex login. Switch Auth Mode to Separate to log in independently.</p>` : ""}
+            <pre>${escapeHtml(authStatusRaw)}</pre>
+          </div>
           <div class="wide auto-models-box">
             <div class="section-head tight">
               <div>
@@ -1243,6 +1318,44 @@ function formatTokenUsage(usage: AnyObject | null | undefined): string {
   const cached = formatTokenCount(tokenValue(usage, "cachedInputTokens"));
   const output = formatTokenCount(tokenValue(usage, "outputTokens"));
   return `in ${input} / cache ${cached} / out ${output}`;
+}
+
+function formatPercent(value: unknown): string {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "--";
+  }
+  return `${Math.round(number)}%`;
+}
+
+function formatLimitReset(value: unknown): string {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return "No reset time";
+  }
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) {
+    return "No reset time";
+  }
+  return `Resets ${new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date)}`;
+}
+
+function renderUsageMetricCard(label: string, window: AnyObject | null | undefined, status: AnyObject | null): string {
+  const available = Boolean(status?.available && window);
+  const value = available ? formatPercent(window?.usedPercent) : "--";
+  const note = available ? formatLimitReset(window?.resetsAt) : "No recent quota data";
+  return `
+    <article class="metric-card panel">
+      <span class="metric-label">${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small class="metric-note">${escapeHtml(note)}</small>
+    </article>
+  `;
 }
 
 function ensureSelectedAgent(session: AnyObject): AnyObject | null {
@@ -1663,6 +1776,8 @@ function renderSessionPage(): string {
   const errors = agents.filter((agent) => agent.status === "error").length;
   const done = agents.filter((agent) => agent.completion === "done").length;
   const isStopped = session.status === "stopped";
+  const isLive = Boolean(session.isLive);
+  const isResumable = !isLive;
   const targetOptions = [`<option value="">All agents</option>`, ...agents.map((agent) => `<option value="${escapeHtml(agent.id)}">${escapeHtml(agent.name)}</option>`)].join("");
 
   return `
@@ -1674,6 +1789,7 @@ function renderSessionPage(): string {
       </div>
       <div class="hero-meta">
         <span class="status-pill ${escapeHtml(session.status)}">${escapeHtml(session.status)}</span>
+        <span>${escapeHtml(isLive ? "live" : "saved")}</span>
         <span>${escapeHtml(session.workspaceName)}</span>
         <span>${escapeHtml(session.workspacePath)}</span>
       </div>
@@ -1712,16 +1828,16 @@ function renderSessionPage(): string {
       <div class="command-layout">
         <label class="command-editor">
           ${renderLabel("Command", "Replace the session goal or send a follow-up instruction into the room.")}
-          <textarea id="session-command" placeholder="${isStopped ? "Resume this session to send new instructions" : "Enter a new goal or an additional instruction"}" ${isStopped ? "disabled" : ""}></textarea>
+          <textarea id="session-command" placeholder="${isResumable ? "Resume this session to send new instructions" : "Enter a new goal or an additional instruction"}" ${isResumable ? "disabled" : ""}></textarea>
         </label>
         <div class="command-controls">
           <label>
             ${renderLabel("Instruction Target", "Leave empty to broadcast to the room. Pick one agent to send a direct operator instruction.")}
-            <select id="session-target" ${isStopped ? "disabled" : ""}>${targetOptions}</select>
+            <select id="session-target" ${isResumable ? "disabled" : ""}>${targetOptions}</select>
           </label>
-          <button id="session-send-goal" class="primary" ${isStopped ? "disabled" : ""}>Replace Goal</button>
-          <button id="session-send-operator" ${isStopped ? "disabled" : ""}>Send Instruction</button>
-          ${isStopped ? `<button id="session-resume" class="primary">Resume Session</button>` : `<button id="session-stop" class="ghost danger">Stop Session</button>`}
+          <button id="session-send-goal" class="primary" ${isResumable ? "disabled" : ""}>Replace Goal</button>
+          <button id="session-send-operator" ${isResumable ? "disabled" : ""}>Send Instruction</button>
+          ${isResumable ? `<button id="session-resume" class="primary">Resume Session</button>` : `<button id="session-stop" class="ghost danger">Stop Session</button>`}
         </div>
       </div>
     </section>
@@ -2009,7 +2125,11 @@ function wireWorkspaceActions(): void {
 
   const quickCreate = document.querySelector<HTMLButtonElement>("#quick-create-workspace");
   if (quickCreate) {
-    quickCreate.onclick = () => void withGuard(quickCreateWorkspace());
+    quickCreate.onclick = () => {
+      state.workspaceCreateModal.open = true;
+      state.workspaceCreateModal.value = "";
+      render();
+    };
   }
 
   const saveWorkspaces = document.querySelector<HTMLButtonElement>("#save-workspaces");
@@ -2031,6 +2151,52 @@ function wireWorkspaceActions(): void {
       render();
     };
   });
+
+  const closeWorkspaceModal = (): void => {
+    state.workspaceCreateModal.open = false;
+    state.workspaceCreateModal.value = "";
+    render();
+  };
+
+  const workspaceModalBackdrop = document.querySelector<HTMLElement>("[data-close-workspace-modal]");
+  if (workspaceModalBackdrop) {
+    workspaceModalBackdrop.onclick = () => closeWorkspaceModal();
+  }
+  const workspaceModalCard = document.querySelector<HTMLElement>("[data-workspace-modal-card]");
+  if (workspaceModalCard) {
+    workspaceModalCard.onclick = (event) => event.stopPropagation();
+  }
+
+  const workspaceCreateCancel = document.querySelector<HTMLButtonElement>("#workspace-create-cancel");
+  if (workspaceCreateCancel) {
+    workspaceCreateCancel.onclick = () => closeWorkspaceModal();
+  }
+
+  const workspaceCreateName = document.querySelector<HTMLInputElement>("#workspace-create-name");
+  if (workspaceCreateName) {
+    requestAnimationFrame(() => {
+      workspaceCreateName.focus();
+      workspaceCreateName.select();
+    });
+    workspaceCreateName.oninput = () => {
+      state.workspaceCreateModal.value = workspaceCreateName.value;
+    };
+    workspaceCreateName.onkeydown = (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void withGuard(quickCreateWorkspace());
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeWorkspaceModal();
+      }
+    };
+  }
+
+  const workspaceCreateConfirm = document.querySelector<HTMLButtonElement>("#workspace-create-confirm");
+  if (workspaceCreateConfirm) {
+    workspaceCreateConfirm.onclick = () => void withGuard(quickCreateWorkspace());
+  }
 }
 
 function wireSettingsActions(): void {
@@ -2072,6 +2238,21 @@ function wireSettingsActions(): void {
     refreshModels.onclick = () => void withGuard(refreshState());
   }
 
+  const refreshAuthStatus = document.querySelector<HTMLButtonElement>("#refresh-auth-status");
+  if (refreshAuthStatus) {
+    refreshAuthStatus.onclick = () => void withGuard(refreshState());
+  }
+
+  const openCodexLogin = document.querySelector<HTMLButtonElement>("#open-codex-login");
+  if (openCodexLogin) {
+    openCodexLogin.onclick = () => void withGuard(openCodexLoginWindow());
+  }
+
+  const codexLogout = document.querySelector<HTMLButtonElement>("#codex-logout");
+  if (codexLogout) {
+    codexLogout.onclick = () => void withGuard(logoutCodexHome());
+  }
+
   document.querySelectorAll<HTMLButtonElement>("[data-remove-agent]").forEach((button) => {
     button.onclick = () => {
       if (!state.snapshot) {
@@ -2085,8 +2266,9 @@ function wireSettingsActions(): void {
 }
 
 async function quickCreateWorkspace(): Promise<void> {
-  const name = window.prompt("Workspace name");
-  if (!name?.trim()) {
+  const name = state.workspaceCreateModal.value.trim();
+  if (!name) {
+    setFlash("error", "Workspace name is required.");
     return;
   }
   const payload = await api("/api/workspaces", {
@@ -2097,8 +2279,10 @@ async function quickCreateWorkspace(): Promise<void> {
     return;
   }
   state.snapshot.config = payload.config;
-  state.selectedWorkspaceName = name.trim();
-  setFlash("info", `Workspace created: ${name.trim()}`);
+  state.selectedWorkspaceName = name;
+  state.workspaceCreateModal.open = false;
+  state.workspaceCreateModal.value = "";
+  setFlash("info", `Workspace created: ${name}`);
   render();
 }
 
@@ -2125,8 +2309,35 @@ async function saveRuntimeTeamSettingsFromPage(): Promise<void> {
     return;
   }
   state.snapshot.config = payload.config;
+  if (payload.codexAuthStatus) {
+    state.snapshot.codexAuthStatus = payload.codexAuthStatus;
+  }
   ensureSelectedWorkspace();
   setFlash("info", "Runtime and team settings saved.");
+  render();
+}
+
+async function openCodexLoginWindow(): Promise<void> {
+  const payload = await api("/api/codex-auth/login", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  if (state.snapshot && payload.codexAuthStatus) {
+    state.snapshot.codexAuthStatus = payload.codexAuthStatus;
+  }
+  clearFlash();
+  render();
+}
+
+async function logoutCodexHome(): Promise<void> {
+  const payload = await api("/api/codex-auth/logout", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  if (state.snapshot && payload.codexAuthStatus) {
+    state.snapshot.codexAuthStatus = payload.codexAuthStatus;
+  }
+  setFlash("info", "Codex login removed from the active home.");
   render();
 }
 
@@ -2152,6 +2363,7 @@ function gatherRuntimeTeamConfig(): AnyObject {
   current.defaults.historyTail = Number(qs<HTMLInputElement>("#cfg-history-tail").value.trim() || "14");
   current.defaults.codexCommand = qs<HTMLInputElement>("#cfg-codex-command").value.trim();
   current.defaults.codexHomeMode = qs<HTMLSelectElement>("#cfg-codex-home-mode").value === "global" ? "global" : "project";
+  current.defaults.codexAuthMode = qs<HTMLSelectElement>("#cfg-codex-auth-mode").value === "separate" ? "separate" : "mirror-global";
   current.defaults.codexHomeDir = qs<HTMLInputElement>("#cfg-codex-home-dir").value.trim();
   current.defaults.model = qs<HTMLSelectElement>("#cfg-model").value.trim() || null;
   current.defaults.modelReasoningEffort = qs<HTMLSelectElement>("#cfg-reasoning-effort").value.trim() || null;
