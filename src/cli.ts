@@ -199,7 +199,7 @@ async function main(): Promise<void> {
   const host = typeof flags.get("host") === "string" ? String(flags.get("host")) : undefined;
   const port = typeof flags.get("port") === "string" ? Number(flags.get("port")) : undefined;
   const server = await startWebServer({ configPath, host, port });
-  output.write(`codex_team web UI: ${server.url}\n`);
+  output.write(`codex_research_team web UI: ${server.url}\n`);
 }
 
 void main();

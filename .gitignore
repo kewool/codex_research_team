@@ -13,8 +13,8 @@ runs/
 workspaces/
 
 # local config
-codex_team.config.json
-.codex_team/
+codex_research_team.config.json
+.codex_research_team/
 
 # logs
 *.log

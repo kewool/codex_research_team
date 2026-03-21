@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { AgentPolicy, AgentPreset, AppConfig, AppDefaults, SessionChannel, SUBGOAL_STAGES, SubgoalStage } from "../shared/types";
 import { ensureDir, projectPath, readJson, writeJson } from "./utils";
 
-export const DEFAULT_CONFIG_PATH = projectPath("codex_team.config.json");
+export const DEFAULT_CONFIG_PATH = projectPath("codex_research_team.config.json");
 export const INTERNAL_CHANNELS: SessionChannel[] = ["status", "system", "control"];
 
 function normalizeChannelName(value: unknown, fallback: string): string {
@@ -313,7 +313,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
 export function createDefaultConfig(root = process.cwd()): AppConfig {
   const runsDir = resolve(root, "runs");
   const workspacesDir = resolve(root, "workspaces");
-  const codexHomeDir = resolve(root, ".codex_team", "home");
+  const codexHomeDir = resolve(root, ".codex_research_team", "home");
   ensureDir(runsDir);
   ensureDir(workspacesDir);
   ensureDir(codexHomeDir);

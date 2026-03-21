@@ -1,4 +1,4 @@
-type AnyObject = Record<string, any>;
+﻿type AnyObject = Record<string, any>;
 type RouteState = { name: "dashboard" } | { name: "workspaces" } | { name: "settings" } | { name: "session"; sessionId: string };
 type FlashState = { kind: "error" | "info"; text: string } | null;
 
@@ -622,7 +622,7 @@ function render(): void {
         <div class="rail-brand">
           <div class="brand-mark" aria-hidden="true">ct</div>
           <div class="brand-copy">
-            <p class="eyebrow">codex_team</p>
+            <p class="eyebrow">codex_research_team</p>
             <h1>Control Room</h1>
           </div>
         </div>
@@ -1115,12 +1115,12 @@ function renderSettingsPage(): string {
           <label>${renderLabel("Server Port", "Port for the local web UI server.")}<input id="cfg-port" value="${escapeHtml(String(config.defaults.serverPort))}" /></label>
           <label>${renderLabel("History Tail", "How many recent transcript items are kept in the prompt tail for each turn.")}<input id="cfg-history-tail" value="${escapeHtml(String(config.defaults.historyTail))}" /></label>
           <label class="wide">${renderLabel("Codex Command", "Executable used to launch Codex for every agent turn.")}<input id="cfg-codex-command" value="${escapeHtml(config.defaults.codexCommand)}" /></label>
-          <label>${renderLabel("Codex Home Mode", "Use the global ~/.codex home, or a project-owned Codex home generated only for codex_team.")} 
+          <label>${renderLabel("Codex Home Mode", "Use the global ~/.codex home, or a project-owned Codex home generated only for codex_research_team.")} 
             <select id="cfg-codex-home-mode">
               ${["project", "global"].map((item) => `<option value="${item}" ${config.defaults.codexHomeMode === item ? "selected" : ""}>${item}</option>`).join("")}
             </select>
           </label>
-          <label class="wide">${renderLabel("Codex Home Dir", "Used when Codex Home Mode is project. codex_team generates a dedicated config.toml here and can copy only the selected MCP servers into it.")}<input id="cfg-codex-home-dir" value="${escapeHtml(String(config.defaults.codexHomeDir || ""))}" /></label>
+          <label class="wide">${renderLabel("Codex Home Dir", "Used when Codex Home Mode is project. codex_research_team generates a dedicated config.toml here and can copy only the selected MCP servers into it.")}<input id="cfg-codex-home-dir" value="${escapeHtml(String(config.defaults.codexHomeDir || ""))}" /></label>
           <label>${renderLabel("Default Model", "Fallback model when an agent does not specify its own override.")}${renderModelSelect('id="cfg-model"', options, config.defaults.model, "No default model")}</label>
           <label>${renderLabel("Reasoning Effort", "Default model reasoning effort passed into Codex for every agent turn unless you change the runtime again later.")}${renderReasoningEffortSelect('id="cfg-reasoning-effort"', reasoningOptions, config.defaults.modelReasoningEffort, "Use Codex default")}</label>
           <label>${renderLabel("Sandbox", "Filesystem isolation mode passed to Codex.")} 
@@ -1606,7 +1606,7 @@ function renderSubgoalBoard(session: AnyObject): string {
           <h4>${escapeHtml(subgoal.title || "Untitled subgoal")}</h4>
           <p>${escapeHtml(subgoal.summary || "-")}</p>
           ${subgoal.activeConflict && subgoal.lastConflictSummary ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastConflictSummary)}</small>` : ""}
-          <small>${escapeHtml(subgoal.assigneeAgentId ? `assignee ${subgoal.assigneeAgentId}` : "shared")} · rev ${escapeHtml(String(subgoal.revision || 0))}</small>
+          <small>${escapeHtml(subgoal.assigneeAgentId ? `assignee ${subgoal.assigneeAgentId}` : "shared")} · rev ${escapeHtml(String(subgoal.revision || 0))}${subgoal.conflictCount ? ` · conflicts ${escapeHtml(String(subgoal.conflictCount))}` : ""}</small>
         </article>
       `).join("")}
     </div>
@@ -1839,16 +1839,22 @@ function renderFeedItem(event: AnyObject): string {
   if (meta.conflictEvent) {
     metaBits.push("conflict");
   }
+  if (meta.obsoleteEvent) {
+    metaBits.push("obsolete");
+  }
   if (meta.expectedRevision != null && meta.currentRevision != null) {
     metaBits.push(`rev ${meta.expectedRevision} -> ${meta.currentRevision}`);
   }
   return `
-    <article class="feed-item ${targetAgentIds.length > 0 ? "targeted" : "broadcast"} ${meta.conflictEvent ? "conflict" : ""}" data-channel="${escapeHtml(String(event.channel || "").toLowerCase())}">
+    <article class="feed-item ${targetAgentIds.length > 0 ? "targeted" : "broadcast"} ${meta.conflictEvent ? "conflict" : ""} ${meta.obsoleteEvent ? "obsolete" : ""}" data-channel="${escapeHtml(String(event.channel || "").toLowerCase())}">
       <header>
         <strong>${escapeHtml(event.sender)}</strong>
         <span>${escapeHtml(event.channel)}</span>
       </header>
-      ${metaBits.length > 0 ? `<div class="feed-meta">${metaBits.map((bit) => `<span class="feed-badge">${escapeHtml(bit)}</span>`).join("")}</div>` : ""}
+      ${metaBits.length > 0 ? `<div class="feed-meta">${metaBits.map((bit) => {
+        const badgeClass = bit === "conflict" ? " conflict" : bit === "obsolete" ? " obsolete" : "";
+        return `<span class="feed-badge${badgeClass}">${escapeHtml(bit)}</span>`;
+      }).join("")}</div>` : ""}
       <p>${escapeHtml(event.content)}</p>
       <small>${escapeHtml(event.timestamp)}</small>
     </article>
@@ -2359,6 +2365,7 @@ window.addEventListener("scroll", () => {
 window.addEventListener("DOMContentLoaded", () => {
   void withGuard(refreshState());
 });
+
 
 
 

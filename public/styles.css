@@ -966,6 +966,11 @@ label {
   background: linear-gradient(180deg, #fff7ed, #fff);
 }
 
+.feed-item.obsolete {
+  border-left-color: #1d4ed8;
+  background: linear-gradient(180deg, #eff6ff, #fff);
+}
+
 .feed-item header {
   align-items: start;
   gap: 0.74rem;
@@ -1094,6 +1099,12 @@ label {
   border-color: rgba(194, 65, 12, 0.28);
   background: rgba(255, 237, 213, 0.85);
   color: #9a3412;
+}
+
+.feed-badge.obsolete {
+  border-color: rgba(29, 78, 216, 0.2);
+  background: rgba(219, 234, 254, 0.9);
+  color: #1d4ed8;
 }
 
 .agent-picker {

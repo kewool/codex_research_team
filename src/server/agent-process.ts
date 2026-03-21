@@ -200,7 +200,7 @@ export class CodexAgentProcess {
       throw new Error("Agent is already running a Codex turn.");
     }
     this.turnIndex += 1;
-    const token = `__CODEX_TEAM_END__${this.agent.id}_${Date.now()}_${this.turnIndex}`;
+    const token = `__CODEX_RESEARCH_TEAM_END__${this.agent.id}_${Date.now()}_${this.turnIndex}`;
     const turnPrompt = [
       `You are ${this.agent.name}, one agent in a long-running multi-agent Codex collaboration runtime.`,
       `Standing brief: ${this.agent.brief}`,
@@ -237,9 +237,9 @@ export class CodexAgentProcess {
       "- Use subgoal stage meanings consistently: open/researching for discovery, ready_for_build when research is sufficient for routing, building for active implementation, ready_for_review when code is ready to audit, done when accepted, blocked when a real blocker prevents progress.",
       "- Implementation and review can reopen research. If downstream evidence changes assumptions, acceptance criteria, benchmark/eval contracts, or operator workflow, update the relevant subgoal back to researching instead of keeping it trapped in a build/review loop.",
       "Return exactly this shape between the XML tags:",
-      "<codex_team-response>",
+      "<codex_research_team-response>",
       '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"id":"sg-1","expectedRevision":3,"title":"short subgoal title","summary":"what changed","stage":"researching","assigneeAgentId":null}],"completion":"continue"}',
-      "</codex_team-response>",
+      "</codex_research_team-response>",
       `Finish with this token on its own line: ${token}`,
     ].join("\n\n");
 
@@ -615,7 +615,7 @@ function repairMalformedResponseJson(payloadText: string): string {
 }
 
 export function parseAgentTurnResult(rawText: string): AgentTurnResult {
-  const match = [...rawText.matchAll(/<codex_team-response>([\s\S]*?)<\/codex_team-response>/g)].at(-1);
+  const match = [...rawText.matchAll(/<codex_research_team-response>([\s\S]*?)<\/codex_research_team-response>/g)].at(-1);
   const payloadText = match?.[1]?.trim() ?? "";
   if (!payloadText) {
     return {

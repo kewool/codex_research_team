@@ -43,6 +43,7 @@ interface RuntimeAgent {
   snapshot: AgentSnapshot;
   pendingDigest: PendingDigest;
   inFlightDigest: PendingDigest | null;
+  inFlightSubgoalRefs: TrackedSubgoalRef[] | null;
   draining: boolean;
   drainTimer: ReturnType<typeof setTimeout> | null;
 }
@@ -54,6 +55,7 @@ interface SubgoalUpdateResult {
 }
 
 interface StaleSubgoalConflict {
+  reason: "stale_update" | "obsolete_turn";
   subgoalId: string;
   agentId: string;
   expectedRevision: number;
@@ -62,6 +64,13 @@ interface StaleSubgoalConflict {
   currentStage: SubgoalStage;
   currentAssigneeAgentId: string | null;
   message: string;
+}
+
+interface TrackedSubgoalRef {
+  id: string;
+  revision: number;
+  stage: SubgoalStage;
+  assigneeAgentId: string | null;
 }
 
 const SUBGOAL_STAGE_SET = new Set<SubgoalStage>([
@@ -533,6 +542,7 @@ export class LiveSession {
         snapshot,
         pendingDigest: emptyPendingDigest(),
         inFlightDigest: null,
+        inFlightSubgoalRefs: null,
         draining: false,
         drainTimer: null,
       });
@@ -737,6 +747,7 @@ export class LiveSession {
     const digest = agent.pendingDigest;
     agent.pendingDigest = emptyPendingDigest();
     agent.inFlightDigest = digest;
+    agent.inFlightSubgoalRefs = this.captureTrackedSubgoalRefs(agent);
     agent.snapshot.pendingSignals = 0;
     this.updateAgentSnapshot(agentId, { status: "running" });
     const transcript = this.buildTranscript(agent, digest);
@@ -754,7 +765,7 @@ export class LiveSession {
 
     try {
       const result = await agent.process.runTurn(this.goal, transcript, triggerSummary);
-      this.applyTurnResult(agentId, result, maxDigestSequence(digest));
+      this.applyTurnResult(agentId, result, maxDigestSequence(digest), agent.inFlightSubgoalRefs);
     } catch (error) {
       const message = String((error as Error).message || "");
       if (this.status === "stopping" && message.includes("Codex run stopped")) {
@@ -766,10 +777,11 @@ export class LiveSession {
         teamMessage: "",
         completion: "blocked",
         rawText: "",
-      }, maxDigestSequence(digest));
+      }, maxDigestSequence(digest), agent.inFlightSubgoalRefs);
     } finally {
       agent.draining = false;
       agent.inFlightDigest = null;
+      agent.inFlightSubgoalRefs = null;
       if (hasPendingDigest(agent.pendingDigest) && this.status !== "stopped") {
         this.scheduleAgentDrain(agentId, true);
       } else if (this.status === "running") {
@@ -785,11 +797,15 @@ export class LiveSession {
     }
   }
 
-  private applyTurnResult(agentId: string, result: AgentTurnResult, consumedSequence = 0): void {
+  private applyTurnResult(agentId: string, result: AgentTurnResult, consumedSequence = 0, inFlightSubgoalRefs: TrackedSubgoalRef[] | null = null): void {
     const agent = this.agents.get(agentId);
     if (!agent) {
       return;
     }
+    const obsoleteConflicts = this.buildObsoleteTurnConflicts(agentId, inFlightSubgoalRefs);
+    const hasRequestedStateMutation = Array.isArray(result.subgoalUpdates) && result.subgoalUpdates.length > 0;
+    const hasMeaningfulTurnOutput = hasRequestedStateMutation || Boolean(result.teamMessage) || result.completion === "done" || result.completion === "blocked";
+    const shouldSuppressObsoleteTurn = obsoleteConflicts.length > 0 && hasMeaningfulTurnOutput;
     const requestedStages = new Set(
       (Array.isArray(result.subgoalUpdates) ? result.subgoalUpdates : [])
         .map((update) => String(update?.stage ?? "").trim())
@@ -797,14 +813,18 @@ export class LiveSession {
     );
     agent.snapshot.turnCount += 1;
     agent.snapshot.lastConsumedSequence = Math.max(Number(agent.snapshot.lastConsumedSequence || 0), consumedSequence);
-    const subgoalResult = this.applySubgoalUpdates(agentId, result.subgoalUpdates);
-    const changedSubgoalIds = subgoalResult.changedIds;
-    agent.snapshot.lastSeenSubgoalRevision = this.subgoalRevision;
-    agent.snapshot.completion = result.completion;
+    const subgoalResult = shouldSuppressObsoleteTurn
+      ? { changedIds: this.recordSubgoalConflicts(obsoleteConflicts), blockedBuildPromotion: false, conflicts: [] as StaleSubgoalConflict[] }
+      : this.applySubgoalUpdates(agentId, result.subgoalUpdates);
+    const changedSubgoalIds = [...new Set([...subgoalResult.changedIds, ...obsoleteConflicts.map((conflict) => conflict.subgoalId)])];
+    if (!shouldSuppressObsoleteTurn) {
+      agent.snapshot.lastSeenSubgoalRevision = this.subgoalRevision;
+    }
+    agent.snapshot.completion = shouldSuppressObsoleteTurn && result.completion !== "blocked" ? "continue" : result.completion;
     agent.snapshot.workingNotes = result.workingNotes;
     agent.snapshot.teamMessage = result.teamMessage;
     agent.snapshot.lastResponseAt = nowIso();
-    agent.snapshot.status = result.completion === "blocked" ? "error" : "idle";
+    agent.snapshot.status = shouldSuppressObsoleteTurn ? "idle" : (result.completion === "blocked" ? "error" : "idle");
 
     if (result.workingNotes.length > 0) {
       this.appendAgentHistory(agent, "notes", result.workingNotes.join("\n"), `Turn ${agent.snapshot.turnCount}`);
@@ -884,13 +904,14 @@ export class LiveSession {
     if (result.workingNotes.length > 0) {
       this.publish(agent.preset.name, "status", result.workingNotes.join(" | "), eventMetadata);
     }
-    if (result.shouldReply && result.teamMessage) {
+    if (result.shouldReply && result.teamMessage && !shouldSuppressObsoleteTurn) {
       this.status = "running";
       this.publish(agent.preset.name, agent.preset.publishChannel, result.teamMessage, eventMetadata);
     }
-    if (subgoalResult.conflicts.length > 0) {
+    const allConflicts = [...subgoalResult.conflicts, ...obsoleteConflicts];
+    if (allConflicts.length > 0) {
       const coordinatorId = this.defaultAssigneeForStage("ready_for_build");
-      for (const conflict of subgoalResult.conflicts) {
+      for (const conflict of allConflicts) {
         const conflictTargets = [...new Set(
           [coordinatorId, conflict.currentAssigneeAgentId]
             .map((value) => String(value ?? "").trim())
@@ -900,10 +921,13 @@ export class LiveSession {
         this.publish(
           "system",
           this.operatorChannel(),
-          `Conflict on ${conflict.subgoalId}: ${conflict.message} Re-read the latest goal board before changing this subgoal again.`,
+          shouldSuppressObsoleteTurn && conflict.reason === "obsolete_turn" && result.teamMessage
+            ? `Conflict on ${conflict.subgoalId}: ${conflict.message} Suppressed stale handoff: ${shortenText(result.teamMessage, 220)} Re-read the latest goal board before changing this subgoal again.`
+            : `Conflict on ${conflict.subgoalId}: ${conflict.message} Re-read the latest goal board before changing this subgoal again.`,
           {
             operatorEvent: true,
             conflictEvent: true,
+            obsoleteEvent: conflict.reason === "obsolete_turn",
             subgoalIds: [conflict.subgoalId],
             staleUpdateBy: conflict.agentId,
             expectedRevision: conflict.expectedRevision,
@@ -1081,6 +1105,7 @@ export class LiveSession {
       return null;
     }
     return {
+      reason: "stale_update",
       subgoalId: existing.id,
       agentId,
       expectedRevision,
@@ -1090,6 +1115,73 @@ export class LiveSession {
       currentAssigneeAgentId: existing.assigneeAgentId ?? null,
       message: `${agentId} proposed ${requestedStage} for ${existing.id} on rev ${expectedRevision}, but the current board is rev ${currentRevision} in ${existing.stage}${existing.assigneeAgentId ? ` assigned to ${existing.assigneeAgentId}` : ""}.`,
     };
+  }
+
+  private captureTrackedSubgoalRefs(agent: RuntimeAgent): TrackedSubgoalRef[] {
+    return this.actionableSubgoalsForAgent(agent).map((subgoal) => ({
+      id: subgoal.id,
+      revision: Number(subgoal.revision || 0),
+      stage: subgoal.stage,
+      assigneeAgentId: subgoal.assigneeAgentId ?? null,
+    }));
+  }
+
+  private buildObsoleteTurnConflicts(agentId: string, trackedRefs: TrackedSubgoalRef[] | null): StaleSubgoalConflict[] {
+    if (!trackedRefs || trackedRefs.length === 0) {
+      return [];
+    }
+    const conflicts: StaleSubgoalConflict[] = [];
+    for (const trackedRef of trackedRefs) {
+      const existing = this.subgoals.find((subgoal) => subgoal.id === trackedRef.id);
+      if (!existing) {
+        continue;
+      }
+      const currentRevision = Number(existing.revision || 0);
+      if (currentRevision === trackedRef.revision) {
+        continue;
+      }
+      conflicts.push({
+        reason: "obsolete_turn",
+        subgoalId: existing.id,
+        agentId,
+        expectedRevision: trackedRef.revision,
+        currentRevision,
+        requestedStage: trackedRef.stage,
+        currentStage: existing.stage,
+        currentAssigneeAgentId: existing.assigneeAgentId ?? null,
+        message: `${agentId} finished work for ${existing.id} using rev ${trackedRef.revision}, but the board advanced to rev ${currentRevision} in ${existing.stage}${existing.assigneeAgentId ? ` assigned to ${existing.assigneeAgentId}` : ""} while the turn was running.`,
+      });
+    }
+    return conflicts;
+  }
+
+  private recordSubgoalConflicts(conflicts: StaleSubgoalConflict[]): string[] {
+    const changedIds = new Set<string>();
+    for (const conflict of conflicts) {
+      const existingIndex = this.subgoals.findIndex((subgoal) => subgoal.id === conflict.subgoalId);
+      if (existingIndex < 0) {
+        continue;
+      }
+      const existing = this.subgoals[existingIndex];
+      const timestamp = nowIso();
+      this.subgoalRevision += 1;
+      this.subgoals[existingIndex] = {
+        ...existing,
+        updatedAt: timestamp,
+        updatedBy: "system",
+        revision: this.subgoalRevision,
+        conflictCount: Math.max(0, Number(existing.conflictCount || 0)) + 1,
+        activeConflict: true,
+        lastConflictAt: timestamp,
+        lastConflictSummary: conflict.message,
+      };
+      changedIds.add(existing.id);
+    }
+    if (changedIds.size > 0) {
+      this.updatedAt = nowIso();
+      this.persistSession();
+    }
+    return [...changedIds];
   }
 
   private applySubgoalUpdates(agentId: string, updates: SubgoalUpdate[] | undefined): SubgoalUpdateResult {
@@ -1110,17 +1202,9 @@ export class LiveSession {
         if (this.shouldIgnoreStaleSubgoalUpdate(existing, update)) {
           const conflict = this.buildStaleSubgoalConflict(agentId, existing, update, requestedStage);
           if (conflict) {
-            this.subgoalRevision += 1;
-            this.subgoals[existingIndex] = {
-              ...existing,
-              updatedAt: timestamp,
-              revision: this.subgoalRevision,
-              conflictCount: Math.max(0, Number(existing.conflictCount || 0)) + 1,
-              activeConflict: true,
-              lastConflictAt: timestamp,
-              lastConflictSummary: conflict.message,
-            };
-            changedIds.add(existing.id);
+            for (const changedId of this.recordSubgoalConflicts([conflict])) {
+              changedIds.add(changedId);
+            }
             conflicts.push(conflict);
           }
           continue;

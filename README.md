@@ -1,6 +1,6 @@
-# codex_team
+# codex_research_team
 
-`codex_team` is now a TypeScript project with a local Node backend and a browser UI.
+`codex_research_team` is now a TypeScript project with a local Node backend and a browser UI.
 It keeps one long-lived Codex process per agent, streams agent output into the web UI, lets you inject `1/2/3/custom` input into a specific agent, and stores sessions under `runs/`.
 
 ## Stack
@@ -93,7 +93,7 @@ node dist/cli.js init
 The project config lives in:
 
 ```text
-./codex_team.config.json
+./codex_research_team.config.json
 ```
 
 This stores:

@@ -106,7 +106,7 @@ export function globalCodexHomeDir(): string {
 
 export function effectiveCodexHomeDir(config: AppConfig): string {
   if (config.defaults.codexHomeMode === "project") {
-    return resolve(String(config.defaults.codexHomeDir || join(process.cwd(), ".codex_team", "home")));
+    return resolve(String(config.defaults.codexHomeDir || join(process.cwd(), ".codex_research_team", "home")));
   }
   return globalCodexHomeDir();
 }
