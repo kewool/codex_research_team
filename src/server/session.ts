@@ -50,6 +50,18 @@ interface RuntimeAgent {
 interface SubgoalUpdateResult {
   changedIds: string[];
   blockedBuildPromotion: boolean;
+  conflicts: StaleSubgoalConflict[];
+}
+
+interface StaleSubgoalConflict {
+  subgoalId: string;
+  agentId: string;
+  expectedRevision: number;
+  currentRevision: number;
+  requestedStage: SubgoalStage;
+  currentStage: SubgoalStage;
+  currentAssigneeAgentId: string | null;
+  message: string;
 }
 
 const SUBGOAL_STAGE_SET = new Set<SubgoalStage>([
@@ -292,6 +304,10 @@ function createSeedSubgoal(goal: string, revision: number, timestamp: string): S
     updatedAt: timestamp,
     updatedBy: "system",
     revision,
+    conflictCount: 0,
+    activeConflict: false,
+    lastConflictAt: null,
+    lastConflictSummary: null,
   };
 }
 
@@ -358,6 +374,10 @@ export class LiveSession {
             updatedAt: String(subgoal?.updatedAt ?? nowIso()),
             updatedBy: String(subgoal?.updatedBy ?? "system"),
             revision: Math.max(1, Number(subgoal?.revision || 1)),
+            conflictCount: Math.max(0, Number(subgoal?.conflictCount || 0)),
+            activeConflict: Boolean(subgoal?.activeConflict),
+            lastConflictAt: subgoal?.lastConflictAt ? String(subgoal.lastConflictAt) : null,
+            lastConflictSummary: subgoal?.lastConflictSummary ? String(subgoal.lastConflictSummary) : null,
           }))
         : [];
       this.updatedAt = String(options.snapshot.updatedAt || this.updatedAt);
@@ -868,6 +888,34 @@ export class LiveSession {
       this.status = "running";
       this.publish(agent.preset.name, agent.preset.publishChannel, result.teamMessage, eventMetadata);
     }
+    if (subgoalResult.conflicts.length > 0) {
+      const coordinatorId = this.defaultAssigneeForStage("ready_for_build");
+      for (const conflict of subgoalResult.conflicts) {
+        const conflictTargets = [...new Set(
+          [coordinatorId, conflict.currentAssigneeAgentId]
+            .map((value) => String(value ?? "").trim())
+            .filter((value) => value && value !== agentId && this.agents.has(value)),
+        )];
+        this.status = "running";
+        this.publish(
+          "system",
+          this.operatorChannel(),
+          `Conflict on ${conflict.subgoalId}: ${conflict.message} Re-read the latest goal board before changing this subgoal again.`,
+          {
+            operatorEvent: true,
+            conflictEvent: true,
+            subgoalIds: [conflict.subgoalId],
+            staleUpdateBy: conflict.agentId,
+            expectedRevision: conflict.expectedRevision,
+            currentRevision: conflict.currentRevision,
+            requestedStage: conflict.requestedStage,
+            currentStage: conflict.currentStage,
+            ...(conflictTargets.length === 1 ? { targetAgentId: conflictTargets[0] } : {}),
+            ...(conflictTargets.length > 0 ? { targetAgentIds: conflictTargets } : {}),
+          },
+        );
+      }
+    }
     if (changedSubgoalIds.length > 0) {
       this.status = "running";
       this.pingGoalBoardOwners();
@@ -1020,14 +1068,39 @@ export class LiveSession {
     return expectedRevision !== Number(existing.revision || 0);
   }
 
+  private buildStaleSubgoalConflict(agentId: string, existing: SessionSubgoal, update: SubgoalUpdate, requestedStage: SubgoalStage): StaleSubgoalConflict | null {
+    if (!update.id) {
+      return null;
+    }
+    const expectedRevision = normalizeExpectedRevision(update.expectedRevision);
+    if (!expectedRevision) {
+      return null;
+    }
+    const currentRevision = Number(existing.revision || 0);
+    if (expectedRevision === currentRevision) {
+      return null;
+    }
+    return {
+      subgoalId: existing.id,
+      agentId,
+      expectedRevision,
+      currentRevision,
+      requestedStage,
+      currentStage: existing.stage,
+      currentAssigneeAgentId: existing.assigneeAgentId ?? null,
+      message: `${agentId} proposed ${requestedStage} for ${existing.id} on rev ${expectedRevision}, but the current board is rev ${currentRevision} in ${existing.stage}${existing.assigneeAgentId ? ` assigned to ${existing.assigneeAgentId}` : ""}.`,
+    };
+  }
+
   private applySubgoalUpdates(agentId: string, updates: SubgoalUpdate[] | undefined): SubgoalUpdateResult {
     const normalized = Array.isArray(updates) ? updates.map((update) => this.sanitizeSubgoalUpdate(update)).filter(Boolean) as SubgoalUpdate[] : [];
     if (normalized.length === 0) {
-      return { changedIds: [], blockedBuildPromotion: false };
+      return { changedIds: [], blockedBuildPromotion: false, conflicts: [] };
     }
 
     const changedIds = new Set<string>();
     let blockedBuildPromotion = false;
+    const conflicts: StaleSubgoalConflict[] = [];
     for (const update of normalized.slice(0, 8)) {
       const existingIndex = update.id ? this.subgoals.findIndex((subgoal) => subgoal.id === update.id) : -1;
       const timestamp = nowIso();
@@ -1035,6 +1108,21 @@ export class LiveSession {
         const existing = this.subgoals[existingIndex];
         let requestedStage = update.stage ? normalizeSubgoalStage(update.stage, existing.stage) : existing.stage;
         if (this.shouldIgnoreStaleSubgoalUpdate(existing, update)) {
+          const conflict = this.buildStaleSubgoalConflict(agentId, existing, update, requestedStage);
+          if (conflict) {
+            this.subgoalRevision += 1;
+            this.subgoals[existingIndex] = {
+              ...existing,
+              updatedAt: timestamp,
+              revision: this.subgoalRevision,
+              conflictCount: Math.max(0, Number(existing.conflictCount || 0)) + 1,
+              activeConflict: true,
+              lastConflictAt: timestamp,
+              lastConflictSummary: conflict.message,
+            };
+            changedIds.add(existing.id);
+            conflicts.push(conflict);
+          }
           continue;
         }
         this.subgoalRevision += 1;
@@ -1057,6 +1145,10 @@ export class LiveSession {
           updatedAt: timestamp,
           updatedBy: agentId,
           revision: this.subgoalRevision,
+          conflictCount: Math.max(0, Number(existing.conflictCount || 0)),
+          activeConflict: false,
+          lastConflictAt: existing.lastConflictAt ?? null,
+          lastConflictSummary: existing.lastConflictSummary ?? null,
         };
         changedIds.add(existing.id);
         continue;
@@ -1083,6 +1175,10 @@ export class LiveSession {
         updatedAt: timestamp,
         updatedBy: agentId,
         revision: this.subgoalRevision,
+        conflictCount: 0,
+        activeConflict: false,
+        lastConflictAt: null,
+        lastConflictSummary: null,
       });
       changedIds.add(id);
     }
@@ -1098,6 +1194,7 @@ export class LiveSession {
     return {
       changedIds: [...changedIds],
       blockedBuildPromotion,
+      conflicts,
     };
   }
 
@@ -1132,7 +1229,10 @@ export class LiveSession {
       const assignee = subgoal.assigneeAgentId ? ` assignee=${subgoal.assigneeAgentId}` : "";
       const revision = ` rev=${subgoal.revision}`;
       const focus = this.actionableSubgoalsForAgent(agent).some((item) => item.id === subgoal.id) ? " focus=true" : "";
-      return `- ${subgoal.id}${revision} [${subgoal.stage}]${assignee}${focus}: ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}`;
+      const conflict = subgoal.activeConflict && subgoal.lastConflictSummary
+        ? ` conflict=${shortenText(subgoal.lastConflictSummary, 120)}`
+        : "";
+      return `- ${subgoal.id}${revision} [${subgoal.stage}]${assignee}${focus}${conflict}: ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}`;
     });
     return lines.join("\n");
   }
@@ -1143,7 +1243,12 @@ export class LiveSession {
       return "(none)";
     }
     return actionable
-      .map((subgoal) => `- ${subgoal.id} rev=${subgoal.revision} [${subgoal.stage}] ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}`)
+      .map((subgoal) => {
+        const conflict = subgoal.activeConflict && subgoal.lastConflictSummary
+          ? ` !! conflict: ${shortenText(subgoal.lastConflictSummary, 120)}`
+          : "";
+        return `- ${subgoal.id} rev=${subgoal.revision} [${subgoal.stage}] ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 180)}${conflict}`;
+      })
       .join("\n");
   }
 

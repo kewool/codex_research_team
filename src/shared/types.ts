@@ -91,6 +91,10 @@ export interface SessionSubgoal {
   updatedAt: string;
   updatedBy: string;
   revision: number;
+  conflictCount: number;
+  activeConflict: boolean;
+  lastConflictAt: string | null;
+  lastConflictSummary: string | null;
 }
 
 export interface SubgoalUpdate {

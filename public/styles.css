@@ -961,6 +961,11 @@ label {
   background: linear-gradient(180deg, #fff, #fff8f4);
 }
 
+.feed-item.conflict {
+  border-left-color: #c2410c;
+  background: linear-gradient(180deg, #fff7ed, #fff);
+}
+
 .feed-item header {
   align-items: start;
   gap: 0.74rem;
@@ -1031,11 +1036,24 @@ label {
   scroll-snap-align: start;
 }
 
+.subgoal-card.conflict {
+  border-color: rgba(194, 65, 12, 0.3);
+  background: linear-gradient(180deg, #fff7ed, var(--surface-2));
+}
+
 .subgoal-card header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.7rem;
+}
+
+.subgoal-card-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .subgoal-card h4 {
@@ -1048,6 +1066,10 @@ label {
 .subgoal-card small {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.subgoal-conflict-text {
+  color: #9a3412;
 }
 
 .feed-meta {
@@ -1066,6 +1088,12 @@ label {
   color: var(--accent);
   font-family: var(--font-mono);
   font-size: 0.72rem;
+}
+
+.feed-badge.conflict {
+  border-color: rgba(194, 65, 12, 0.28);
+  background: rgba(255, 237, 213, 0.85);
+  color: #9a3412;
 }
 
 .agent-picker {

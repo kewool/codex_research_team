@@ -1595,13 +1595,17 @@ function renderSubgoalBoard(session: AnyObject): string {
   return `
     <div class="subgoal-board" data-subgoal-count="${escapeHtml(String(subgoals.length))}">
       ${subgoals.map((subgoal: AnyObject) => `
-        <article class="subgoal-card" data-stage="${escapeHtml(String(subgoal.stage || "").toLowerCase())}">
+        <article class="subgoal-card ${subgoal.activeConflict ? "conflict" : ""}" data-stage="${escapeHtml(String(subgoal.stage || "").toLowerCase())}">
           <header>
             <strong>${escapeHtml(subgoal.id || "-")}</strong>
-            <span class="status-pill ${escapeHtml(String(subgoal.stage || "open"))}">${escapeHtml(subgoal.stage || "open")}</span>
+            <div class="subgoal-card-badges">
+              ${subgoal.activeConflict ? `<span class="feed-badge conflict">conflict</span>` : ""}
+              <span class="status-pill ${escapeHtml(String(subgoal.stage || "open"))}">${escapeHtml(subgoal.stage || "open")}</span>
+            </div>
           </header>
           <h4>${escapeHtml(subgoal.title || "Untitled subgoal")}</h4>
           <p>${escapeHtml(subgoal.summary || "-")}</p>
+          ${subgoal.activeConflict && subgoal.lastConflictSummary ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastConflictSummary)}</small>` : ""}
           <small>${escapeHtml(subgoal.assigneeAgentId ? `assignee ${subgoal.assigneeAgentId}` : "shared")} · rev ${escapeHtml(String(subgoal.revision || 0))}</small>
         </article>
       `).join("")}
@@ -1832,8 +1836,14 @@ function renderFeedItem(event: AnyObject): string {
   if (meta.directInput) {
     metaBits.push("direct input");
   }
+  if (meta.conflictEvent) {
+    metaBits.push("conflict");
+  }
+  if (meta.expectedRevision != null && meta.currentRevision != null) {
+    metaBits.push(`rev ${meta.expectedRevision} -> ${meta.currentRevision}`);
+  }
   return `
-    <article class="feed-item ${targetAgentIds.length > 0 ? "targeted" : "broadcast"}" data-channel="${escapeHtml(String(event.channel || "").toLowerCase())}">
+    <article class="feed-item ${targetAgentIds.length > 0 ? "targeted" : "broadcast"} ${meta.conflictEvent ? "conflict" : ""}" data-channel="${escapeHtml(String(event.channel || "").toLowerCase())}">
       <header>
         <strong>${escapeHtml(event.sender)}</strong>
         <span>${escapeHtml(event.channel)}</span>
