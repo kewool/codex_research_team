@@ -88,10 +88,10 @@ function workspaceGuardrailLines(workspacePath: string): string[] {
     "- Do not create, modify, delete, or publish files outside the selected workspace.",
     "- Do not introduce or normalize repo-root output trees such as exports/, release/, publish/, or other sibling directories.",
     "- If existing workspace code tries to write outside the selected workspace, do not implement or preserve that behavior. Treat it as a workflow risk to report and keep outputs workspace-relative instead.",
-    "- Do not use synthetic write probes or blocked PowerShell/cmd wrappers as proof that the workspace is read-only. A command rejected by policy does not by itself prove workspace-local edits are impossible.",
-    "- If you already have an actionable workspace-local task, prefer the normal edit/apply path over permission probes.",
+    "- Do not use synthetic write probes as proof that the workspace is blocked. If you already have an actionable workspace-local task, prefer the normal edit/apply path first.",
     "- Do not open, print, or dump raw binary/media files directly. Treat audio, wav, mp3, image, and other large binaries as opaque assets unless a specific tool is required.",
     "- Prefer metadata, filenames, directory listings, and targeted text/code reads over broad workspace scans.",
+    "- Treat large structured data files and logs as expensive context. Do not fully load or print them by default; prefer schema/header checks, row counts, targeted filters, sampled slices, or narrow aggregations first.",
     "- Avoid generated artifacts and scratch directories such as tmp_*, output folders, caches, or derived stems unless they are the explicit subject of the turn.",
     "- Do not repeatedly reread unchanged large files just to restate prior findings. Reuse the transcript and current trigger as the primary context.",
   ];
@@ -235,8 +235,12 @@ export class CodexAgentProcess {
       ...routingGuidanceLines(this.agent, this.config.agents),
       "- Only give public working notes. Do not expose hidden reasoning.",
       "- The goal board is the source of truth for progress. Use subgoalUpdates to create, refine, assign, or advance subgoals whenever the state of the work has changed.",
+      "- The top-level session goal is not itself a subgoal. Create a subgoal only when you can name a concrete research topic, deliverable, or handoff slice.",
+      "- Prefer topic titles for subgoals. Do not use generic names like 'Subgoal sg-2'.",
+      "- If new evidence belongs to a materially different research axis, acceptance contract, deliverable, or downstream owner, create a new subgoal instead of overloading an existing one.",
       "- Prefer updating the relevant subgoal over merely describing progress in free text. Keep subgoalUpdates.summary short, and store durable details in addFacts/addOpenQuestions/addResolvedDecisions/addAcceptanceCriteria/addRelevantFiles/nextAction.",
       "- If you are not the current assignee or a coordination owner for an existing subgoal, prefer append-only updates instead of changing stage, decisionState, or assignee.",
+      "- Only coordination owners should canonicalize duplicates by setting mergedIntoSubgoalId on the source subgoal. Do not rewrite or delete history in free text.",
       "- Use decisionState deliberately: open while exploring, disputed when contradictions remain, resolved only when the core contract is settled enough for downstream routing.",
       "- If you reopen a subgoal because implementation or review changed the assumptions, include reopenReason and set decisionState to disputed.",
       "- When you update an existing subgoal by id, include expectedRevision from the current Goal board or Actionable subgoals view.",
@@ -248,7 +252,7 @@ export class CodexAgentProcess {
       "- Implementation and review can reopen research. If downstream evidence changes assumptions, acceptance, eval contracts, or operator workflow, move the affected subgoal back to researching instead of trapping it in a build/review loop.",
       "Return exactly this shape between the XML tags:",
       "<codex_research_team-response>",
-      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"id":"sg-1","expectedRevision":3,"summary":"what changed","addFacts":["new evidence"],"addOpenQuestions":["what remains unresolved"],"addResolvedDecisions":["what is now settled"],"addAcceptanceCriteria":["what must be true"],"addRelevantFiles":["src/example.ts"],"nextAction":"who should do what next","stage":"researching","decisionState":"disputed","reopenReason":"what remains unresolved","assigneeAgentId":null}],"completion":"continue"}',
+      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"title":"subtitle timing contract","summary":"Define the timing contract for subtitle rows before implementation.","addFacts":["Current timing source differs between export paths."],"addOpenQuestions":["Which timestamp source is canonical?"],"addRelevantFiles":["src/subtitles.ts"],"nextAction":"researchers should settle the canonical timestamp source","stage":"researching","decisionState":"open","assigneeAgentId":null,"mergedIntoSubgoalId":null}],"completion":"continue"}',
       "</codex_research_team-response>",
       `Finish with this token on its own line: ${token}`,
     ].join("\n\n");
@@ -659,6 +663,9 @@ function normalizeParsedTurnResult(parsed: Partial<AgentTurnResult> & { teamMess
           decisionState: String((item as Record<string, unknown>).decisionState ?? "").trim() || null,
           reopenReason: String((item as Record<string, unknown>).reopenReason ?? "").trim() || null,
           assigneeAgentId: String((item as Record<string, unknown>).assigneeAgentId ?? "").trim() || null,
+          mergedIntoSubgoalId: Object.prototype.hasOwnProperty.call(item as Record<string, unknown>, "mergedIntoSubgoalId")
+            ? (String((item as Record<string, unknown>).mergedIntoSubgoalId ?? "").trim() || null)
+            : undefined,
         }))
     : [];
   return {

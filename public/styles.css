@@ -1080,11 +1080,28 @@ label {
   background: linear-gradient(180deg, #fff7ed, var(--surface-2));
 }
 
+.subgoal-card.archived {
+  background: #f8fafc;
+  opacity: 0.88;
+}
+
 .subgoal-card header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.7rem;
+}
+
+.subgoal-card header > div:first-child {
+  display: grid;
+  gap: 0.16rem;
+}
+
+.subgoal-card-id {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .subgoal-card-badges {
@@ -1132,6 +1149,21 @@ label {
 
 .subgoal-conflict-text {
   color: #9a3412;
+}
+
+.subgoal-archive {
+  margin-top: 0.9rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.85rem;
+}
+
+.subgoal-archive summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.subgoal-board-archived {
+  margin-top: 0.7rem;
 }
 
 .feed-meta {

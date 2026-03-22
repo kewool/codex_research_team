@@ -99,6 +99,9 @@ export interface SessionSubgoal {
   decisionState: SubgoalDecisionState;
   lastReopenReason: string | null;
   assigneeAgentId: string | null;
+  mergedIntoSubgoalId: string | null;
+  archivedAt: string | null;
+  archivedBy: string | null;
   updatedAt: string;
   updatedBy: string;
   revision: number;
@@ -123,6 +126,7 @@ export interface SubgoalUpdate {
   decisionState?: SubgoalDecisionState | null;
   reopenReason?: string | null;
   assigneeAgentId?: string | null;
+  mergedIntoSubgoalId?: string | null;
 }
 
 export interface AgentHistoryEntry {

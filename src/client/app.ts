@@ -1732,7 +1732,10 @@ function renderSessionFeed(sessionId: string): string {
 
 function renderSubgoalBoard(session: AnyObject): string {
   const subgoals = Array.isArray(session.subgoals) ? session.subgoals : [];
-  if (subgoals.length === 0) {
+  const activeSubgoals = subgoals.filter((subgoal: AnyObject) => !subgoal.mergedIntoSubgoalId && !subgoal.archivedAt);
+  const mergedSubgoals = subgoals.filter((subgoal: AnyObject) => subgoal.mergedIntoSubgoalId || subgoal.archivedAt);
+  const subgoalById = new Map(subgoals.map((subgoal: AnyObject) => [String(subgoal.id || ""), subgoal]));
+  if (activeSubgoals.length === 0 && mergedSubgoals.length === 0) {
     return `<p class="muted">No subgoals yet.</p>`;
   }
   const renderMemoryList = (label: string, items: unknown[] | null | undefined): string => {
@@ -1742,34 +1745,52 @@ function renderSubgoalBoard(session: AnyObject): string {
     }
     return `<div class="subgoal-memory-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(values.join(" | "))}</span></div>`;
   };
-  return `
-    <div class="subgoal-board" data-subgoal-count="${escapeHtml(String(subgoals.length))}">
-      ${subgoals.map((subgoal: AnyObject) => `
-        <article class="subgoal-card ${subgoal.activeConflict ? "conflict" : ""}" data-stage="${escapeHtml(String(subgoal.stage || "").toLowerCase())}">
-          <header>
-            <strong>${escapeHtml(subgoal.id || "-")}</strong>
-            <div class="subgoal-card-badges">
-              ${subgoal.activeConflict ? `<span class="feed-badge conflict">conflict</span>` : ""}
-              <span class="status-pill ${escapeHtml(String(subgoal.stage || "open"))}">${escapeHtml(subgoal.stage || "open")}</span>
-              <span class="feed-badge">${escapeHtml(String(subgoal.decisionState || "open"))}</span>
-            </div>
-          </header>
-          <h4>${escapeHtml(subgoal.title || "Untitled subgoal")}</h4>
-          <p>${escapeHtml(subgoal.summary || "-")}</p>
-          <div class="subgoal-memory">
-            ${renderMemoryList("Facts", subgoal.facts)}
-            ${renderMemoryList("Open", subgoal.openQuestions)}
-            ${renderMemoryList("Resolved", subgoal.resolvedDecisions)}
-            ${renderMemoryList("Acceptance", subgoal.acceptanceCriteria)}
-            ${renderMemoryList("Files", subgoal.relevantFiles)}
-            ${subgoal.nextAction ? `<div class="subgoal-memory-row"><strong>Next</strong><span>${escapeHtml(String(subgoal.nextAction || ""))}</span></div>` : ""}
+  const renderSubgoalCard = (subgoal: AnyObject, archived = false): string => {
+    const mergedTarget = subgoal.mergedIntoSubgoalId ? subgoalById.get(String(subgoal.mergedIntoSubgoalId)) : null;
+    return `
+      <article class="subgoal-card ${subgoal.activeConflict ? "conflict" : ""} ${archived ? "archived" : ""}" data-stage="${escapeHtml(String(subgoal.stage || "").toLowerCase())}">
+        <header>
+          <div>
+            <strong>${escapeHtml(subgoal.title || "Untitled subgoal")}</strong>
+            <small class="subgoal-card-id">${escapeHtml(String(subgoal.id || "-"))}</small>
           </div>
-          ${subgoal.activeConflict && subgoal.lastConflictSummary ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastConflictSummary)}</small>` : ""}
-          ${subgoal.lastReopenReason ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastReopenReason)}</small>` : ""}
-          <small>${escapeHtml(subgoal.assigneeAgentId ? `assignee ${subgoal.assigneeAgentId}` : "shared")} · rev ${escapeHtml(String(subgoal.revision || 0))}${subgoal.conflictCount ? ` · conflicts ${escapeHtml(String(subgoal.conflictCount))}` : ""}</small>
-        </article>
-      `).join("")}
-    </div>
+          <div class="subgoal-card-badges">
+            ${subgoal.activeConflict ? `<span class="feed-badge conflict">conflict</span>` : ""}
+            ${archived ? `<span class="feed-badge">merged</span>` : ""}
+            <span class="status-pill ${escapeHtml(String(subgoal.stage || "open"))}">${escapeHtml(subgoal.stage || "open")}</span>
+            <span class="feed-badge">${escapeHtml(String(subgoal.decisionState || "open"))}</span>
+          </div>
+        </header>
+        <p>${escapeHtml(subgoal.summary || "-")}</p>
+        <div class="subgoal-memory">
+          ${renderMemoryList("Facts", subgoal.facts)}
+          ${renderMemoryList("Open", subgoal.openQuestions)}
+          ${renderMemoryList("Resolved", subgoal.resolvedDecisions)}
+          ${renderMemoryList("Acceptance", subgoal.acceptanceCriteria)}
+          ${renderMemoryList("Files", subgoal.relevantFiles)}
+          ${subgoal.nextAction ? `<div class="subgoal-memory-row"><strong>Next</strong><span>${escapeHtml(String(subgoal.nextAction || ""))}</span></div>` : ""}
+        </div>
+        ${subgoal.activeConflict && subgoal.lastConflictSummary ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastConflictSummary)}</small>` : ""}
+        ${subgoal.lastReopenReason ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastReopenReason)}</small>` : ""}
+        ${archived ? `<small class="subgoal-conflict-text">Merged into ${escapeHtml(String(mergedTarget?.title || subgoal.mergedIntoSubgoalId || "canonical subgoal"))}</small>` : ""}
+        <small>${escapeHtml(subgoal.assigneeAgentId ? `assignee ${subgoal.assigneeAgentId}` : "shared")} · rev ${escapeHtml(String(subgoal.revision || 0))}${subgoal.conflictCount ? ` · conflicts ${escapeHtml(String(subgoal.conflictCount))}` : ""}</small>
+      </article>
+    `;
+  };
+  return `
+    ${activeSubgoals.length > 0 ? `
+      <div class="subgoal-board" data-subgoal-count="${escapeHtml(String(activeSubgoals.length))}">
+        ${activeSubgoals.map((subgoal: AnyObject) => renderSubgoalCard(subgoal)).join("")}
+      </div>
+    ` : `<p class="muted">No active subgoals yet.</p>`}
+    ${mergedSubgoals.length > 0 ? `
+      <details class="subgoal-archive">
+        <summary>Merged topics ${escapeHtml(String(mergedSubgoals.length))}</summary>
+        <div class="subgoal-board subgoal-board-archived" data-subgoal-count="${escapeHtml(String(mergedSubgoals.length))}">
+          ${mergedSubgoals.map((subgoal: AnyObject) => renderSubgoalCard(subgoal, true)).join("")}
+        </div>
+      </details>
+    ` : ""}
   `;
 }
 
@@ -1841,7 +1862,7 @@ function renderSessionPage(): string {
     </section>
     <section class="summary-row">
       <article class="metric-card panel"><span class="metric-label">Events</span><strong>${escapeHtml(String(session.eventCount))}</strong></article>
-      <article class="metric-card panel"><span class="metric-label">Subgoals</span><strong>${escapeHtml(String((session.subgoals || []).length))}</strong></article>
+      <article class="metric-card panel"><span class="metric-label">Subgoals</span><strong>${escapeHtml(String(((session.subgoals || []) as AnyObject[]).filter((subgoal) => !subgoal.mergedIntoSubgoalId && !subgoal.archivedAt).length))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Waiting Input</span><strong>${escapeHtml(String(waiting))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Errors</span><strong>${escapeHtml(String(errors))}</strong></article>
       <article class="metric-card panel"><span class="metric-label">Completed Agents</span><strong>${escapeHtml(String(done))}</strong></article>

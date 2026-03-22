@@ -349,33 +349,6 @@ function normalizeSubgoalStage(value: unknown, fallback: SubgoalStage = "researc
   return SUBGOAL_STAGE_SET.has(stage as SubgoalStage) ? (stage as SubgoalStage) : fallback;
 }
 
-function createSeedSubgoal(goal: string, revision: number, timestamp: string): SessionSubgoal {
-  const normalized = compactWhitespace(goal);
-  const title = normalized.length > 72 ? `${normalized.slice(0, 69).trimEnd()}...` : normalized;
-  return {
-    id: "sg-1",
-    title: title || "Initial subgoal",
-    summary: normalized || "Investigate the top-level goal and break it down into actionable work.",
-    facts: [],
-    openQuestions: [],
-    resolvedDecisions: [],
-    acceptanceCriteria: [],
-    relevantFiles: [],
-    nextAction: null,
-    stage: "open",
-    decisionState: "open",
-    lastReopenReason: null,
-    assigneeAgentId: null,
-    updatedAt: timestamp,
-    updatedBy: "system",
-    revision,
-    conflictCount: 0,
-    activeConflict: false,
-    lastConflictAt: null,
-    lastConflictSummary: null,
-  };
-}
-
 function normalizeExpectedRevision(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
@@ -444,6 +417,9 @@ export class LiveSession {
             decisionState: normalizeDecisionState(subgoal?.decisionState, defaultDecisionStateForStage(normalizeSubgoalStage(subgoal?.stage, "researching"))),
             lastReopenReason: subgoal?.lastReopenReason ? String(subgoal.lastReopenReason) : null,
             assigneeAgentId: String(subgoal?.assigneeAgentId ?? "").trim() || null,
+            mergedIntoSubgoalId: String(subgoal?.mergedIntoSubgoalId ?? "").trim() || null,
+            archivedAt: subgoal?.archivedAt ? String(subgoal.archivedAt) : null,
+            archivedBy: subgoal?.archivedBy ? String(subgoal.archivedBy) : null,
             updatedAt: String(subgoal?.updatedAt ?? nowIso()),
             updatedBy: String(subgoal?.updatedBy ?? "system"),
             revision: Math.max(1, Number(subgoal?.revision || 1)),
@@ -456,10 +432,6 @@ export class LiveSession {
       this.updatedAt = String(options.snapshot.updatedAt || this.updatedAt);
       this.status = options.snapshot.status === "stopped" || options.snapshot.status === "error" ? "idle" : options.snapshot.status;
       this.historySerial = Math.max(0, this.sequence * 10);
-    }
-    if (this.subgoals.length === 0) {
-      this.subgoalRevision = Math.max(1, this.subgoalRevision || 1);
-      this.subgoals = [createSeedSubgoal(this.goal, this.subgoalRevision, this.updatedAt)];
     }
   }
 
@@ -1114,7 +1086,7 @@ export class LiveSession {
   private resetGoalBoard(goal: string, actor: string): void {
     this.subgoalRevision = Math.max(0, this.subgoalRevision) + 1;
     const timestamp = nowIso();
-    this.subgoals = [createSeedSubgoal(goal, this.subgoalRevision, timestamp)];
+    this.subgoals = [];
     for (const agent of this.agents.values()) {
       agent.snapshot.lastSeenSubgoalRevision = 0;
       this.persistAgent(agent.preset.id);
@@ -1166,6 +1138,9 @@ export class LiveSession {
   }
 
   private canMutateSubgoal(agentId: string, existing: SessionSubgoal): boolean {
+    if (this.isArchivedSubgoal(existing)) {
+      return false;
+    }
     if (this.coordinationOwnerIds().includes(agentId)) {
       return true;
     }
@@ -1177,7 +1152,7 @@ export class LiveSession {
 
   private hasStateMutation(update: SubgoalUpdate, existing: SessionSubgoal | null): boolean {
     if (!existing) {
-      return Boolean(update.title || update.summary || update.stage || update.decisionState || update.reopenReason || update.assigneeAgentId);
+      return Boolean(update.title || update.summary || update.stage || update.decisionState || update.reopenReason || update.assigneeAgentId || update.mergedIntoSubgoalId);
     }
     return Boolean(
       (update.title && update.title !== existing.title) ||
@@ -1185,7 +1160,8 @@ export class LiveSession {
       (update.stage && update.stage !== existing.stage) ||
       (update.decisionState && update.decisionState !== existing.decisionState) ||
       (update.reopenReason && update.reopenReason !== existing.lastReopenReason) ||
-      (update.assigneeAgentId !== undefined && (update.assigneeAgentId || null) !== (existing.assigneeAgentId || null))
+      (update.assigneeAgentId !== undefined && (update.assigneeAgentId || null) !== (existing.assigneeAgentId || null)) ||
+      (update.mergedIntoSubgoalId !== undefined && (update.mergedIntoSubgoalId || null) !== (existing.mergedIntoSubgoalId || null))
     );
   }
 
@@ -1233,6 +1209,12 @@ export class LiveSession {
     const decisionState = update.decisionState ? normalizeDecisionState(update.decisionState, "open") : null;
     const reopenReason = String(update.reopenReason ?? "").trim() || null;
     const assigneeAgentId = String(update.assigneeAgentId ?? "").trim() || null;
+    const mergedIntoSubgoalId = update.mergedIntoSubgoalId !== undefined
+      ? (String(update.mergedIntoSubgoalId ?? "").trim() || null)
+      : undefined;
+    if (!id && mergedIntoSubgoalId !== undefined) {
+      return null;
+    }
     if (
       !id &&
       !expectedRevision &&
@@ -1247,7 +1229,8 @@ export class LiveSession {
       !stage &&
       !decisionState &&
       !reopenReason &&
-      !assigneeAgentId
+      !assigneeAgentId &&
+      mergedIntoSubgoalId === undefined
     ) {
       return null;
     }
@@ -1266,7 +1249,41 @@ export class LiveSession {
       decisionState,
       reopenReason,
       assigneeAgentId,
+      ...(mergedIntoSubgoalId !== undefined ? { mergedIntoSubgoalId } : {}),
     };
+  }
+
+  private isArchivedSubgoal(subgoal: SessionSubgoal | null | undefined): boolean {
+    return Boolean(subgoal && (subgoal.mergedIntoSubgoalId || subgoal.archivedAt));
+  }
+
+  private activeSubgoals(): SessionSubgoal[] {
+    return this.subgoals.filter((subgoal) => !this.isArchivedSubgoal(subgoal));
+  }
+
+  private archivedSubgoals(): SessionSubgoal[] {
+    return this.subgoals.filter((subgoal) => this.isArchivedSubgoal(subgoal));
+  }
+
+  private canCanonicalizeSubgoal(agentId: string): boolean {
+    return this.coordinationOwnerIds().includes(agentId);
+  }
+
+  private deriveSubgoalTitle(update: SubgoalUpdate, fallbackId: string): string {
+    const explicitTitle = compactWhitespace(update.title || "");
+    if (explicitTitle) {
+      return shortenText(explicitTitle, 90);
+    }
+    const candidates = [
+      compactWhitespace(update.summary || ""),
+      ...(Array.isArray(update.addResolvedDecisions) ? update.addResolvedDecisions : []).map((item) => compactWhitespace(String(item ?? ""))),
+      ...(Array.isArray(update.addOpenQuestions) ? update.addOpenQuestions : []).map((item) => compactWhitespace(String(item ?? ""))),
+      ...(Array.isArray(update.addFacts) ? update.addFacts : []).map((item) => compactWhitespace(String(item ?? ""))),
+    ].filter(Boolean);
+    if (candidates.length > 0) {
+      return shortenText(candidates[0], 90);
+    }
+    return `Untitled topic ${fallbackId}`;
   }
 
   private shouldIgnoreStaleSubgoalUpdate(existing: SessionSubgoal, update: SubgoalUpdate): boolean {
@@ -1452,6 +1469,9 @@ export class LiveSession {
       const timestamp = nowIso();
       if (existingIndex >= 0) {
         const existing = this.subgoals[existingIndex];
+        if (this.isArchivedSubgoal(existing)) {
+          continue;
+        }
         const canMutateState = this.canMutateSubgoal(agentId, existing);
         const wantsStateMutation = this.hasStateMutation(update, existing);
         let requestedStage = canMutateState && update.stage ? normalizeSubgoalStage(update.stage, existing.stage) : existing.stage;
@@ -1474,6 +1494,45 @@ export class LiveSession {
           continue;
         }
         if (!canMutateState && !update.addFacts?.length && !update.addOpenQuestions?.length && !update.addResolvedDecisions?.length && !update.addAcceptanceCriteria?.length && !update.addRelevantFiles?.length) {
+          continue;
+        }
+        const requestedMergeTargetId =
+          canMutateState && this.canCanonicalizeSubgoal(agentId) && update.mergedIntoSubgoalId
+            ? update.mergedIntoSubgoalId
+            : null;
+        if (requestedMergeTargetId) {
+          const mergeTarget = this.activeSubgoals().find((subgoal) => subgoal.id === requestedMergeTargetId);
+          if (!mergeTarget || mergeTarget.id === existing.id) {
+            continue;
+          }
+          if (existing.stage === "building" || existing.stage === "ready_for_review") {
+            this.subgoalRevision += 1;
+            this.subgoals[existingIndex] = {
+              ...existing,
+              updatedAt: timestamp,
+              updatedBy: agentId,
+              revision: this.subgoalRevision,
+              activeConflict: true,
+              lastConflictAt: timestamp,
+              lastConflictSummary: `Merge into ${mergeTarget.id} deferred until the active ${existing.stage} stage finishes.`,
+            };
+            changedIds.add(existing.id);
+            continue;
+          }
+          this.subgoalRevision += 1;
+          this.subgoals[existingIndex] = {
+            ...existing,
+            mergedIntoSubgoalId: mergeTarget.id,
+            archivedAt: timestamp,
+            archivedBy: agentId,
+            updatedAt: timestamp,
+            updatedBy: agentId,
+            revision: this.subgoalRevision,
+            activeConflict: false,
+            lastConflictAt: null,
+            lastConflictSummary: null,
+          };
+          changedIds.add(existing.id);
           continue;
         }
         this.subgoalRevision += 1;
@@ -1512,6 +1571,9 @@ export class LiveSession {
           decisionState,
           lastReopenReason: reopenReason,
           assigneeAgentId,
+          mergedIntoSubgoalId: existing.mergedIntoSubgoalId,
+          archivedAt: existing.archivedAt,
+          archivedBy: existing.archivedBy,
           updatedAt: timestamp,
           updatedBy: agentId,
           revision: this.subgoalRevision,
@@ -1546,7 +1608,7 @@ export class LiveSession {
       const stage = this.normalizeStageForAssignee(requestedAssignee, requestedStage, id);
       this.subgoals.push({
         id,
-        title: update.title || `Subgoal ${id}`,
+        title: this.deriveSubgoalTitle(update, id),
         summary: update.summary || "No summary provided.",
         facts: mergeMemoryList([], update.addFacts, SUBGOAL_FACT_LIMIT),
         openQuestions: mergeMemoryList([], update.addOpenQuestions, SUBGOAL_QUESTION_LIMIT),
@@ -1558,6 +1620,9 @@ export class LiveSession {
         decisionState,
         lastReopenReason: decisionState === "resolved" ? null : (update.reopenReason || buildGateMessage || (update.summary ? shortenText(update.summary, 220) : null)),
         assigneeAgentId: this.normalizeAssigneeForStage(explicitAssignee && stage === requestedStage ? explicitAssignee : null, stage),
+        mergedIntoSubgoalId: null,
+        archivedAt: null,
+        archivedBy: null,
         updatedAt: timestamp,
         updatedBy: agentId,
         revision: this.subgoalRevision,
@@ -1570,10 +1635,12 @@ export class LiveSession {
     }
 
     this.subgoals = [...this.subgoals].sort((left, right) => {
-      if (left.stage === right.stage) {
-        return left.id.localeCompare(right.id);
+      const leftArchived = this.isArchivedSubgoal(left) ? 1 : 0;
+      const rightArchived = this.isArchivedSubgoal(right) ? 1 : 0;
+      if (leftArchived !== rightArchived) {
+        return leftArchived - rightArchived;
       }
-      return left.revision - right.revision;
+      return Number(left.revision || 0) - Number(right.revision || 0);
     });
     this.updatedAt = nowIso();
     this.persistSession();
@@ -1589,7 +1656,7 @@ export class LiveSession {
     if (ownedStages.length === 0) {
       return [];
     }
-    return this.subgoals.filter((subgoal) => {
+    return this.activeSubgoals().filter((subgoal) => {
       if (!ownedStages.includes(subgoal.stage)) {
         return false;
       }
@@ -1617,13 +1684,13 @@ export class LiveSession {
       push(subgoal);
     }
     if (ownsDiscoveryStages) {
-      for (const subgoal of this.subgoals) {
+      for (const subgoal of this.activeSubgoals()) {
         if (subgoal.decisionState === "disputed" || subgoal.activeConflict || subgoal.assigneeAgentId === agent.preset.id) {
           push(subgoal);
         }
       }
     } else if (ownsRoutingStages) {
-      for (const subgoal of this.subgoals) {
+      for (const subgoal of this.activeSubgoals()) {
         if (
           subgoal.activeConflict ||
           subgoal.decisionState === "disputed" ||
@@ -1650,17 +1717,18 @@ export class LiveSession {
   }
 
   private buildGoalBoardSummary(agent: RuntimeAgent): string {
-    if (this.subgoals.length === 0) {
+    const activeSubgoals = this.activeSubgoals();
+    if (activeSubgoals.length === 0) {
       return "(no subgoals yet)";
     }
-    const lines = this.subgoals.map((subgoal) => {
+    const lines = activeSubgoals.map((subgoal) => {
       const assignee = subgoal.assigneeAgentId ? ` assignee=${subgoal.assigneeAgentId}` : "";
       const revision = ` rev=${subgoal.revision}`;
       const decision = ` decision=${subgoal.decisionState}`;
       const focus = this.actionableSubgoalsForAgent(agent).some((item) => item.id === subgoal.id) ? " focus=true" : "";
       const conflict = subgoal.activeConflict ? ` conflicts=${Math.max(1, Number(subgoal.conflictCount || 0))}` : "";
       const reopen = subgoal.lastReopenReason ? ` reopen=true` : "";
-      return `- ${subgoal.id}${revision} [${subgoal.stage}]${decision}${assignee}${focus}${conflict}${reopen}: ${shortenText(subgoal.title, 90)}`;
+      return `- ${shortenText(subgoal.title, 90)} (${subgoal.id})${revision} [${subgoal.stage}]${decision}${assignee}${focus}${conflict}${reopen}`;
     });
     return lines.join("\n");
   }
@@ -1676,7 +1744,7 @@ export class LiveSession {
           ? ` !! conflict: ${shortenText(subgoal.lastConflictSummary, 120)}`
           : "";
         const reopen = subgoal.lastReopenReason ? ` reopen=${shortenText(subgoal.lastReopenReason, 100)}` : "";
-        return `- ${subgoal.id} rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState} ${shortenText(subgoal.title, 100)} :: ${shortenText(subgoal.summary, 140)}${conflict}${reopen}`;
+        return `- ${shortenText(subgoal.title, 100)} (${subgoal.id}) rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState} :: ${shortenText(subgoal.summary, 140)}${conflict}${reopen}`;
       })
       .join("\n");
   }
@@ -1689,7 +1757,7 @@ export class LiveSession {
     return relevant
       .map((subgoal) => {
         const lines = [
-          `- ${subgoal.id} rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState}${subgoal.assigneeAgentId ? ` assignee=${subgoal.assigneeAgentId}` : ""}: ${shortenText(subgoal.title, 100)}`,
+          `- ${shortenText(subgoal.title, 100)} (${subgoal.id}) rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState}${subgoal.assigneeAgentId ? ` assignee=${subgoal.assigneeAgentId}` : ""}`,
           `  summary: ${shortenText(subgoal.summary, 180)}`,
         ];
         if (subgoal.facts.length > 0) {
