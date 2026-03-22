@@ -141,6 +141,10 @@ export interface AgentTurnResult {
   targetAgentId?: string | null;
   targetAgentIds?: string[] | null;
   subgoalUpdates?: SubgoalUpdate[];
+  runtimeDiagnostics?: {
+    sawFileChange: boolean;
+    sawPolicyWriteBlock: boolean;
+  };
   completion: "continue" | "done" | "blocked";
   rawText: string;
 }

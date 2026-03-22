@@ -23,6 +23,10 @@ interface CodexJsonEvent {
     aggregated_output?: string;
     exit_code?: number | null;
     status?: string;
+    changes?: Array<{
+      path?: string;
+      kind?: string;
+    }>;
   };
   usage?: {
     input_tokens?: number;
@@ -35,6 +39,8 @@ interface CompletedRun {
   responseText: string;
   sawToken: boolean;
   stderrText: string;
+  sawFileChange: boolean;
+  sawPolicyWriteBlock: boolean;
 }
 
 function emptyTokenUsage(): TokenUsage {
@@ -78,9 +84,12 @@ function workspaceGuardrailLines(workspacePath: string): string[] {
   const normalizedWorkspacePath = normalizePath(workspacePath);
   return [
     `- Your allowed working scope is the selected workspace only: ${normalizedWorkspacePath}. Treat paths outside this workspace as out-of-scope.`,
+    "- The runtime may permit real filesystem writes so you can modify the selected workspace directly. Treat that as execution capability for this workspace only, not permission to inspect or modify unrelated files.",
     "- Do not create, modify, delete, or publish files outside the selected workspace.",
     "- Do not introduce or normalize repo-root output trees such as exports/, release/, publish/, or other sibling directories.",
     "- If existing workspace code tries to write outside the selected workspace, do not implement or preserve that behavior. Treat it as a workflow risk to report and keep outputs workspace-relative instead.",
+    "- Do not use synthetic write probes or blocked PowerShell/cmd wrappers as proof that the workspace is read-only. A command rejected by policy does not by itself prove workspace-local edits are impossible.",
+    "- If you already have an actionable workspace-local task, prefer the normal edit/apply path over permission probes.",
     "- Do not open, print, or dump raw binary/media files directly. Treat audio, wav, mp3, image, and other large binaries as opaque assets unless a specific tool is required.",
     "- Prefer metadata, filenames, directory listings, and targeted text/code reads over broad workspace scans.",
     "- Avoid generated artifacts and scratch directories such as tmp_*, output folders, caches, or derived stems unless they are the explicit subject of the turn.",
@@ -106,6 +115,11 @@ function routingGuidanceLines(agent: AgentPreset, allAgents: AgentPreset[]): str
 
 function hasStructuredResponseEnvelope(rawText: string): boolean {
   return /<codex_research_team-response>[\s\S]*?<\/codex_research_team-response>/i.test(String(rawText ?? ""));
+}
+
+function looksLikeWriteProbeCommand(command: string): boolean {
+  const normalized = String(command ?? "").toLowerCase();
+  return /(new-item|set-content|add-content|out-file|copy-item|move-item|remove-item|mkdir|md |ni |touch|>>|>\s*[^|]|apply_patch|write)/.test(normalized);
 }
 
 export class CodexAgentProcess {
@@ -221,27 +235,17 @@ export class CodexAgentProcess {
       ...routingGuidanceLines(this.agent, this.config.agents),
       "- Only give public working notes. Do not expose hidden reasoning.",
       "- The goal board is the source of truth for progress. Use subgoalUpdates to create, refine, assign, or advance subgoals whenever the state of the work has changed.",
-      "- Prefer updating the relevant subgoal over merely describing progress in free text.",
-      "- Treat subgoalUpdates.summary as the canonical short state summary, and use addFacts/addOpenQuestions/addResolvedDecisions/addAcceptanceCriteria/addRelevantFiles/nextAction to store durable details without repeating them in team chat.",
-      "- If you are not the current assignee or a coordination owner for an existing subgoal, prefer append-only updates (facts/questions/files) instead of trying to change stage, decisionState, or assignee.",
-      "- Use subgoal decisionState explicitly: open while still exploring, disputed when contradictory evidence or unresolved reopen pressure remains, resolved only when the core contract for that subgoal is settled enough to hand off downstream.",
-      "- If you reopen a subgoal because implementation/review changed the assumptions or exposed a contradiction, include reopenReason and set decisionState to disputed.",
-      "- When you update an existing subgoal by id, include expectedRevision and copy the rev number shown in the Goal board or Actionable subgoals view. If the revision has changed since you read it, the runtime may ignore the stale state mutation instead of overwriting newer work.",
-      "- Keep teamMessage compact: one short delta or handoff, ideally 1-4 sentences. Put durable state into subgoalUpdates.summary and the structured append fields instead of repeating long evidence dumps in teamMessage.",
-      "- Do not paste long command transcripts, multi-paragraph audits, or large code excerpts into teamMessage. Summarize the conclusion, the changed evidence, and the next action.",
-      "- Reply only when you add materially new evidence, a concrete contradiction, or a decision-changing action.",
-      "- Do not reply just to agree, restate, lightly refine, or say that you support a prior point.",
-      "- If the primary trigger is a targeted message from a specific agent and your response is mainly for that sender, target your reply back to that sender by default.",
-      "- If the primary trigger is a targeted multi-agent handoff and your response is mainly for that same subset, keep the reply targeted to that subset instead of broadcasting.",
-      "- If the recent transcript already contains your point in substance, set shouldReply=false and leave teamMessage empty.",
-      "- If you have nothing new right now but may still add value after future team updates, set shouldReply=false and keep completion=\"continue\".",
-      "- Prefer shouldReply=false when you only validated, agreed, or found that a concern is stale and no one needs to act differently.",
-      "- If you reply, make the action owner obvious: either broadcast a team-level decision or target the exact next actor.",
-      "- Use completion=\"done\" only when your current branch looks genuinely exhausted until a new goal, operator instruction, implementation change, or targeted request gives you new information.",
-      "- When one specific agent should act next, use targetAgentId instead of relying only on broadcast.",
-      "- When two or more specific agents should act next, use targetAgentIds for a multi-target handoff.",
-      "- Use subgoal stage meanings consistently: open/researching for discovery, ready_for_build when research is sufficient for routing, building for active implementation, ready_for_review when code is ready to audit, done when accepted, blocked when a real blocker prevents progress.",
-      "- Implementation and review can reopen research. If downstream evidence changes assumptions, acceptance criteria, benchmark/eval contracts, or operator workflow, update the relevant subgoal back to researching instead of keeping it trapped in a build/review loop.",
+      "- Prefer updating the relevant subgoal over merely describing progress in free text. Keep subgoalUpdates.summary short, and store durable details in addFacts/addOpenQuestions/addResolvedDecisions/addAcceptanceCriteria/addRelevantFiles/nextAction.",
+      "- If you are not the current assignee or a coordination owner for an existing subgoal, prefer append-only updates instead of changing stage, decisionState, or assignee.",
+      "- Use decisionState deliberately: open while exploring, disputed when contradictions remain, resolved only when the core contract is settled enough for downstream routing.",
+      "- If you reopen a subgoal because implementation or review changed the assumptions, include reopenReason and set decisionState to disputed.",
+      "- When you update an existing subgoal by id, include expectedRevision from the current Goal board or Actionable subgoals view.",
+      "- Keep teamMessage to one short delta or handoff. Do not paste long transcripts, audits, or code excerpts.",
+      "- Reply only when you add materially new evidence, a contradiction, or a decision-changing action. Otherwise prefer shouldReply=false and keep completion=\"continue\".",
+      "- Use targetAgentId or targetAgentIds only when a specific next actor or subset needs to act; otherwise broadcast.",
+      "- Use completion=\"done\" only when your branch is genuinely exhausted until a new goal, operator instruction, implementation change, or targeted request arrives.",
+      "- Use subgoal stages consistently: open/researching for discovery, ready_for_build for routing-ready research, building for active implementation, ready_for_review for audit, done for accepted work, blocked for real blockers.",
+      "- Implementation and review can reopen research. If downstream evidence changes assumptions, acceptance, eval contracts, or operator workflow, move the affected subgoal back to researching instead of trapping it in a build/review loop.",
       "Return exactly this shape between the XML tags:",
       "<codex_research_team-response>",
       '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"id":"sg-1","expectedRevision":3,"summary":"what changed","addFacts":["new evidence"],"addOpenQuestions":["what remains unresolved"],"addResolvedDecisions":["what is now settled"],"addAcceptanceCriteria":["what must be true"],"addRelevantFiles":["src/example.ts"],"nextAction":"who should do what next","stage":"researching","decisionState":"disputed","reopenReason":"what remains unresolved","assigneeAgentId":null}],"completion":"continue"}',
@@ -261,6 +265,10 @@ export class CodexAgentProcess {
     const result = await this.executePrompt(turnPrompt, token);
     this.resumeNotice = "";
     const parsed = parseAgentTurnResult(result.responseText);
+    parsed.runtimeDiagnostics = {
+      sawFileChange: result.sawFileChange,
+      sawPolicyWriteBlock: result.sawPolicyWriteBlock,
+    };
     if (!result.sawToken) {
       if (!hasStructuredResponseEnvelope(result.responseText)) {
         throw new Error("Turn completion token was missing from the Codex response.");
@@ -322,6 +330,10 @@ export class CodexAgentProcess {
       let stdoutBuffer = "";
       let stderrBuffer = "";
       const agentMessages: string[] = [];
+      const runState = {
+        sawFileChange: false,
+        sawPolicyWriteBlock: false,
+      };
       let settled = false;
 
       const rejectWith = (error: Error): void => {
@@ -353,7 +365,7 @@ export class CodexAgentProcess {
         while (newlineIndex >= 0) {
           const line = stdoutBuffer.slice(0, newlineIndex).replace(/\r$/, "");
           stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-          this.handleStdoutLine(line, agentMessages);
+          this.handleStdoutLine(line, agentMessages, runState);
           newlineIndex = stdoutBuffer.indexOf("\n");
         }
       });
@@ -366,7 +378,7 @@ export class CodexAgentProcess {
 
       child.on("exit", (code, signal) => {
         if (stdoutBuffer.trim()) {
-          this.handleStdoutLine(stdoutBuffer.trim(), agentMessages);
+          this.handleStdoutLine(stdoutBuffer.trim(), agentMessages, runState);
           stdoutBuffer = "";
         }
         if (this.stopping) {
@@ -387,12 +399,18 @@ export class CodexAgentProcess {
           responseText,
           sawToken,
           stderrText: stderrBuffer.trim(),
+          sawFileChange: runState.sawFileChange,
+          sawPolicyWriteBlock: runState.sawPolicyWriteBlock,
         });
       });
     });
   }
 
-  private handleStdoutLine(line: string, agentMessages: string[]): void {
+  private handleStdoutLine(
+    line: string,
+    agentMessages: string[],
+    runState: { sawFileChange: boolean; sawPolicyWriteBlock: boolean },
+  ): void {
     const trimmed = line.trim();
     if (!trimmed) {
       return;
@@ -418,7 +436,7 @@ export class CodexAgentProcess {
         this.appendStdoutBlock("[turn.started]");
         break;
       case "item.completed":
-        this.handleCompletedItem(event.item ?? {}, agentMessages);
+        this.handleCompletedItem(event.item ?? {}, agentMessages, runState);
         break;
       case "turn.completed": {
         const usage = normalizeTokenUsage(event.usage ?? {});
@@ -441,7 +459,19 @@ export class CodexAgentProcess {
     }
   }
 
-  private handleCompletedItem(item: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; status?: string }, agentMessages: string[]): void {
+  private handleCompletedItem(
+    item: {
+      type?: string;
+      text?: string;
+      command?: string;
+      aggregated_output?: string;
+      exit_code?: number | null;
+      status?: string;
+      changes?: Array<{ path?: string; kind?: string }>;
+    },
+    agentMessages: string[],
+    runState: { sawFileChange: boolean; sawPolicyWriteBlock: boolean },
+  ): void {
     const type = String(item.type ?? "").trim() || "item";
     const text = String(item.text ?? "").trim();
     if (type === "agent_message") {
@@ -465,6 +495,24 @@ export class CodexAgentProcess {
       const output = String(item.aggregated_output ?? "").trim();
       if (output) {
         this.appendStdoutBlock(output);
+        if (output.toLowerCase().includes("rejected: blocked by policy") && looksLikeWriteProbeCommand(command)) {
+          runState.sawPolicyWriteBlock = true;
+        }
+      }
+      return;
+    }
+
+    if (type === "file_change") {
+      runState.sawFileChange = true;
+      const changed = Array.isArray(item.changes)
+        ? item.changes
+            .map((change) => `${String(change.kind ?? "").trim() || "change"} ${String(change.path ?? "").trim()}`)
+            .filter(Boolean)
+        : [];
+      if (changed.length > 0) {
+        this.appendStdoutBlock(`[file_change] ${changed.join(" | ")}`);
+      } else {
+        this.appendStdoutBlock("[file_change]");
       }
       return;
     }

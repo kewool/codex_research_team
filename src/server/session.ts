@@ -730,6 +730,9 @@ export class LiveSession {
     if (!this.isGoalEvent(event) && !this.isOperatorEvent(event) && targetIds.length === 0 && !ownsDiscoveryStages && this.discoveryChannels().has(event.channel)) {
       return false;
     }
+    if (this.requiresGoalBoardOwnership(agent) && !this.isOperatorEvent(event) && !this.goalBoardNeedsAttention(agent)) {
+      return false;
+    }
     if (ownsOnlyReviewStage && !this.isOperatorEvent(event) && !this.goalBoardNeedsAttention(agent)) {
       return false;
     }
@@ -870,12 +873,15 @@ export class LiveSession {
     if (!agent) {
       return;
     }
+    const normalizedResult = this.shouldSuppressPolicyWriteProbeBlocker(agent, result)
+      ? this.sanitizePolicyWriteProbeBlocker(result)
+      : result;
     const obsoleteConflicts = this.buildObsoleteTurnConflicts(agentId, inFlightSubgoalRefs);
-    const hasRequestedStateMutation = Array.isArray(result.subgoalUpdates) && result.subgoalUpdates.length > 0;
-    const hasMeaningfulTurnOutput = hasRequestedStateMutation || Boolean(result.teamMessage) || result.completion === "done" || result.completion === "blocked";
+    const hasRequestedStateMutation = Array.isArray(normalizedResult.subgoalUpdates) && normalizedResult.subgoalUpdates.length > 0;
+    const hasMeaningfulTurnOutput = hasRequestedStateMutation || Boolean(normalizedResult.teamMessage) || normalizedResult.completion === "done" || normalizedResult.completion === "blocked";
     const shouldSuppressObsoleteTurn = obsoleteConflicts.length > 0 && hasMeaningfulTurnOutput;
     const requestedStages = new Set(
-      (Array.isArray(result.subgoalUpdates) ? result.subgoalUpdates : [])
+      (Array.isArray(normalizedResult.subgoalUpdates) ? normalizedResult.subgoalUpdates : [])
         .map((update) => String(update?.stage ?? "").trim())
         .filter(Boolean),
     );
@@ -883,31 +889,31 @@ export class LiveSession {
     agent.snapshot.lastConsumedSequence = Math.max(Number(agent.snapshot.lastConsumedSequence || 0), consumedSequence);
     const subgoalResult = shouldSuppressObsoleteTurn
       ? { changedIds: this.recordSubgoalConflicts(obsoleteConflicts), blockedBuildPromotion: false, conflicts: [] as StaleSubgoalConflict[] }
-      : this.applySubgoalUpdates(agentId, result.subgoalUpdates);
+      : this.applySubgoalUpdates(agentId, normalizedResult.subgoalUpdates);
     const changedSubgoalIds = [...new Set([...subgoalResult.changedIds, ...obsoleteConflicts.map((conflict) => conflict.subgoalId)])];
     if (!shouldSuppressObsoleteTurn) {
       agent.snapshot.lastSeenSubgoalRevision = this.subgoalRevision;
     }
-    agent.snapshot.completion = shouldSuppressObsoleteTurn && result.completion !== "blocked" ? "continue" : result.completion;
-    agent.snapshot.workingNotes = result.workingNotes;
-    agent.snapshot.teamMessage = result.teamMessage;
+    agent.snapshot.completion = shouldSuppressObsoleteTurn && normalizedResult.completion !== "blocked" ? "continue" : normalizedResult.completion;
+    agent.snapshot.workingNotes = normalizedResult.workingNotes;
+    agent.snapshot.teamMessage = normalizedResult.teamMessage;
     agent.snapshot.lastResponseAt = nowIso();
-    agent.snapshot.status = shouldSuppressObsoleteTurn ? "idle" : (result.completion === "blocked" ? "error" : "idle");
+    agent.snapshot.status = shouldSuppressObsoleteTurn ? "idle" : (normalizedResult.completion === "blocked" ? "error" : "idle");
 
-    if (result.workingNotes.length > 0) {
-      this.appendAgentHistory(agent, "notes", result.workingNotes.join("\n"), `Turn ${agent.snapshot.turnCount}`);
+    if (normalizedResult.workingNotes.length > 0) {
+      this.appendAgentHistory(agent, "notes", normalizedResult.workingNotes.join("\n"), `Turn ${agent.snapshot.turnCount}`);
     }
-    if (result.teamMessage) {
-      this.appendAgentHistory(agent, "messages", result.teamMessage, `Turn ${agent.snapshot.turnCount}`);
+    if (normalizedResult.teamMessage) {
+      this.appendAgentHistory(agent, "messages", normalizedResult.teamMessage, `Turn ${agent.snapshot.turnCount}`);
     }
 
     this.persistAgent(agentId);
     this.emit({ type: "agent", sessionId: this.id, agent: { ...agent.snapshot } });
 
-    const requestedTargetIds = Array.isArray(result.targetAgentIds) && result.targetAgentIds.length > 0
-      ? result.targetAgentIds
-      : result.targetAgentId
-        ? [result.targetAgentId]
+    const requestedTargetIds = Array.isArray(normalizedResult.targetAgentIds) && normalizedResult.targetAgentIds.length > 0
+      ? normalizedResult.targetAgentIds
+      : normalizedResult.targetAgentId
+        ? [normalizedResult.targetAgentId]
         : [];
     const normalizedTargetAgentIds = [...new Set(
       requestedTargetIds
@@ -955,27 +961,37 @@ export class LiveSession {
     if (subgoalResult.blockedBuildPromotion) {
       effectiveTargetAgentIds = builderId ? effectiveTargetAgentIds.filter((value) => value !== builderId) : effectiveTargetAgentIds;
     }
+    effectiveTargetAgentIds = effectiveTargetAgentIds.filter((value) => {
+      const target = this.agents.get(value);
+      if (!target) {
+        return false;
+      }
+      if (!this.requiresGoalBoardOwnership(target)) {
+        return true;
+      }
+      return this.goalBoardNeedsAttention(target);
+    });
     if (ownsReviewStageOnly && requestedStages.has("done") && effectiveTargetAgentIds.length === 0) {
-      result.shouldReply = false;
-      result.teamMessage = "";
+      normalizedResult.shouldReply = false;
+      normalizedResult.teamMessage = "";
     }
 
     const eventMetadata = {
       agentId,
       turnCount: agent.snapshot.turnCount,
-      shouldReply: result.shouldReply,
-      completion: result.completion,
+      shouldReply: normalizedResult.shouldReply,
+      completion: normalizedResult.completion,
       ...(changedSubgoalIds.length > 0 ? { subgoalIds: changedSubgoalIds } : {}),
       ...(effectiveTargetAgentIds.length === 1 ? { targetAgentId: effectiveTargetAgentIds[0] } : {}),
       ...(effectiveTargetAgentIds.length > 0 ? { targetAgentIds: effectiveTargetAgentIds } : {}),
     };
 
-    if (result.workingNotes.length > 0) {
-      this.publish(agent.preset.name, "status", result.workingNotes.join(" | "), eventMetadata);
+    if (normalizedResult.workingNotes.length > 0) {
+      this.publish(agent.preset.name, "status", normalizedResult.workingNotes.join(" | "), eventMetadata);
     }
-    if (result.shouldReply && result.teamMessage && !shouldSuppressObsoleteTurn) {
+    if (normalizedResult.shouldReply && normalizedResult.teamMessage && !shouldSuppressObsoleteTurn) {
       this.status = "running";
-      this.publish(agent.preset.name, agent.preset.publishChannel, result.teamMessage, eventMetadata);
+      this.publish(agent.preset.name, agent.preset.publishChannel, normalizedResult.teamMessage, eventMetadata);
     }
     const allConflicts = [...subgoalResult.conflicts, ...obsoleteConflicts];
     if (allConflicts.length > 0) {
@@ -1006,8 +1022,8 @@ export class LiveSession {
         this.publish(
           "system",
           this.operatorChannel(),
-          shouldSuppressObsoleteTurn && grouped.conflicts.some((conflict) => conflict.reason === "obsolete_turn") && result.teamMessage
-            ? `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Suppressed stale handoff: ${shortenText(result.teamMessage, 220)} Re-read the latest goal board before changing this subgoal again.`
+          shouldSuppressObsoleteTurn && grouped.conflicts.some((conflict) => conflict.reason === "obsolete_turn") && normalizedResult.teamMessage
+            ? `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Suppressed stale handoff: ${shortenText(normalizedResult.teamMessage, 220)} Re-read the latest goal board before changing this subgoal again.`
             : `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Re-read the latest goal board before changing this subgoal again.`,
           {
             operatorEvent: true,
@@ -1341,6 +1357,57 @@ export class LiveSession {
       });
     }
     return conflicts;
+  }
+
+  private isPolicyWriteProbeText(text: string | null | undefined): boolean {
+    const normalized = String(text ?? "").trim().toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+    return /read-only|blocked by policy|rejected by policy|write probe|writable runtime|writable executor|workspace-local write|permission check/.test(normalized);
+  }
+
+  private shouldSuppressPolicyWriteProbeBlocker(agent: RuntimeAgent, result: AgentTurnResult): boolean {
+    const ownsBuildStage =
+      Array.isArray(agent.preset.policy?.ownedStages) &&
+      agent.preset.policy.ownedStages.includes("building");
+    if (!ownsBuildStage) {
+      return false;
+    }
+    const diagnostics = result.runtimeDiagnostics;
+    if (!diagnostics?.sawPolicyWriteBlock || diagnostics.sawFileChange) {
+      return false;
+    }
+    if (this.isPolicyWriteProbeText(result.teamMessage)) {
+      return true;
+    }
+    if ((result.workingNotes || []).some((note) => this.isPolicyWriteProbeText(note))) {
+      return true;
+    }
+    return (result.subgoalUpdates || []).some((update) =>
+      String(update?.stage ?? "").trim() === "blocked" ||
+      this.isPolicyWriteProbeText(update?.summary) ||
+      this.isPolicyWriteProbeText(update?.reopenReason) ||
+      this.isPolicyWriteProbeText(update?.nextAction) ||
+      (Array.isArray(update?.addFacts) && update.addFacts.some((entry) => this.isPolicyWriteProbeText(entry))) ||
+      (Array.isArray(update?.addOpenQuestions) && update.addOpenQuestions.some((entry) => this.isPolicyWriteProbeText(entry))),
+    );
+  }
+
+  private sanitizePolicyWriteProbeBlocker(result: AgentTurnResult): AgentTurnResult {
+    const sanitizedNotes = (result.workingNotes || []).filter((note) => !this.isPolicyWriteProbeText(note));
+    const sanitizedUpdates = (result.subgoalUpdates || []).filter((update) => String(update?.stage ?? "").trim() !== "blocked");
+    return {
+      ...result,
+      shouldReply: false,
+      workingNotes: [
+        ...sanitizedNotes,
+        "Ignored a policy-blocked shell write probe as a blocker signal. Keep routing unchanged unless a normal workspace-local edit path actually fails.",
+      ],
+      teamMessage: "",
+      subgoalUpdates: sanitizedUpdates,
+      completion: "continue",
+    };
   }
 
   private recordSubgoalConflicts(conflicts: StaleSubgoalConflict[]): string[] {

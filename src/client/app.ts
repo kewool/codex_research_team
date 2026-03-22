@@ -1959,13 +1959,6 @@ function renderFocusedAgentCard(sessionId: string, agent: AnyObject): string {
       <section class="agent-output-panel">
         <div class="history-list" data-agent-history="1" data-agent-id="${escapeHtml(agent.id)}" data-history-kind="${escapeHtml(historyKindForTab(tab))}" data-scroll-key="${escapeHtml(`agent-output:${agent.id}:${tab}`)}" data-scroll-mode="append">${renderAgentTabContent(sessionId, agent, tab)}</div>
       </section>
-      <div class="inline-actions input-actions">
-        <button data-agent-input="${escapeHtml(agent.id)}:1">1</button>
-        <button data-agent-input="${escapeHtml(agent.id)}:2">2</button>
-        <button data-agent-input="${escapeHtml(agent.id)}:3">3</button>
-        <input data-agent-custom="${escapeHtml(agent.id)}" placeholder="custom input" />
-        <button data-agent-send="${escapeHtml(agent.id)}" class="primary">Send</button>
-      </div>
     </section>
   `;
 }
@@ -2064,13 +2057,6 @@ function renderAgentDetailCard(agent: AnyObject): string {
         <section><h5>Last Error</h5><pre>${escapeHtml(agent.lastError || "-")}</pre></section>
         <section><h5>Stdout</h5><pre>${escapeHtml(agent.stdoutTail || "-")}</pre></section>
         <section><h5>Stderr</h5><pre>${escapeHtml(agent.stderrTail || "-")}</pre></section>
-      </div>
-      <div class="inline-actions input-actions">
-        <button data-agent-input="${escapeHtml(agent.id)}:1">1</button>
-        <button data-agent-input="${escapeHtml(agent.id)}:2">2</button>
-        <button data-agent-input="${escapeHtml(agent.id)}:3">3</button>
-        <input data-agent-custom="${escapeHtml(agent.id)}" placeholder="custom input" />
-        <button data-agent-send="${escapeHtml(agent.id)}" class="primary">Send</button>
       </div>
     </article>
   `;
@@ -2502,22 +2488,6 @@ function wireSessionActions(): void {
       render();
     };
   });
-  document.querySelectorAll<HTMLButtonElement>("[data-agent-input]").forEach((button) => {
-    button.onclick = () => {
-      const [agentId, text] = (button.dataset.agentInput || "").split(":");
-      void withGuard(sendAgentInput(agentId, text));
-    };
-  });
-  document.querySelectorAll<HTMLButtonElement>("[data-agent-send]").forEach((button) => {
-    button.onclick = () => {
-      const agentId = button.dataset.agentSend || "";
-      const input = document.querySelector<HTMLInputElement>(`[data-agent-custom="${agentId}"]`);
-      void withGuard(sendAgentInput(agentId, input?.value || ""));
-      if (input) {
-        input.value = "";
-      }
-    };
-  });
 
   const feedList = document.querySelector<HTMLElement>("[data-feed-list]");
   if (feedList && feedList.dataset.historyBound !== "1") {
@@ -2562,20 +2532,6 @@ async function sendSessionCommand(channel: "goal" | "operator"): Promise<void> {
   });
   upsertSession(payload.session);
   qs<HTMLTextAreaElement>("#session-command").value = "";
-  clearFlash();
-  render();
-}
-
-async function sendAgentInput(agentId: string, text: string): Promise<void> {
-  const session = currentSession();
-  if (!session || !text.trim()) {
-    return;
-  }
-  const payload = await api(`/api/sessions/${encodeURIComponent(session.id)}/inputs`, {
-    method: "POST",
-    body: JSON.stringify({ agentId, text }),
-  });
-  upsertSession(payload.session);
   clearFlash();
   render();
 }
