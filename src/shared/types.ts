@@ -88,6 +88,7 @@ export interface SessionEvent {
 export interface SessionSubgoal {
   id: string;
   title: string;
+  topicKey: string;
   summary: string;
   facts: string[];
   openQuestions: string[];
@@ -115,6 +116,7 @@ export interface SubgoalUpdate {
   id?: string | null;
   expectedRevision?: number | null;
   title?: string | null;
+  topicKey?: string | null;
   summary?: string | null;
   addFacts?: string[] | null;
   addOpenQuestions?: string[] | null;
@@ -148,6 +150,7 @@ export interface AgentTurnResult {
   runtimeDiagnostics?: {
     sawFileChange: boolean;
     sawPolicyWriteBlock: boolean;
+    sawBroadDataLoad: boolean;
   };
   completion: "continue" | "done" | "blocked";
   rawText: string;

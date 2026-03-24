@@ -41,6 +41,7 @@ interface CompletedRun {
   stderrText: string;
   sawFileChange: boolean;
   sawPolicyWriteBlock: boolean;
+  sawBroadDataLoad: boolean;
 }
 
 function emptyTokenUsage(): TokenUsage {
@@ -92,6 +93,9 @@ function workspaceGuardrailLines(workspacePath: string): string[] {
     "- Do not open, print, or dump raw binary/media files directly. Treat audio, wav, mp3, image, and other large binaries as opaque assets unless a specific tool is required.",
     "- Prefer metadata, filenames, directory listings, and targeted text/code reads over broad workspace scans.",
     "- Treat large structured data files and logs as expensive context. Do not fully load or print them by default; prefer schema/header checks, row counts, targeted filters, sampled slices, or narrow aggregations first.",
+    "- Do not materialize full stream/chat datasets into memory by default with helpers like load_chat_log, pandas.read_csv, or csv.DictReader over the entire file. Only do that after smaller probes prove it is necessary for the current subgoal.",
+    "- Do not run full-dataset pipeline paths like ChatHighlightDetector, HighlightRescorer, or ShortsGenerator against project-scale assets by default. Prefer smaller fixtures, bounded slices, or existing regressions first.",
+    "- Reuse already-established aggregates from the transcript or goal board instead of recomputing the same full-file statistics on later turns.",
     "- Avoid generated artifacts and scratch directories such as tmp_*, output folders, caches, or derived stems unless they are the explicit subject of the turn.",
     "- Do not repeatedly reread unchanged large files just to restate prior findings. Reuse the transcript and current trigger as the primary context.",
   ];
@@ -120,6 +124,11 @@ function hasStructuredResponseEnvelope(rawText: string): boolean {
 function looksLikeWriteProbeCommand(command: string): boolean {
   const normalized = String(command ?? "").toLowerCase();
   return /(new-item|set-content|add-content|out-file|copy-item|move-item|remove-item|mkdir|md |ni |touch|>>|>\s*[^|]|apply_patch|write)/.test(normalized);
+}
+
+function looksLikeBroadDataLoadCommand(command: string): boolean {
+  const normalized = String(command ?? "").toLowerCase();
+  return /(load_chat_log\s*\(|pandas\.read_csv|pd\.read_csv|csv\.dictreader|import-csv\b|chathighlightdetector\s*\(|find_highlights\s*\(|highlightrescorer\s*\(|shortsgenerator\s*\(|generator\.generate\s*\()/i.test(normalized);
 }
 
 export class CodexAgentProcess {
@@ -234,11 +243,14 @@ export class CodexAgentProcess {
       ...workspaceGuardrailLines(this.workspacePath),
       ...routingGuidanceLines(this.agent, this.config.agents),
       "- Only give public working notes. Do not expose hidden reasoning.",
-      "- The goal board is the source of truth for progress. Use subgoalUpdates to create, refine, assign, or advance subgoals whenever the state of the work has changed.",
+      "- The goal board is the source of truth for progress. Use subgoalUpdates when the board state or durable subgoal memory has actually changed.",
       "- The top-level session goal is not itself a subgoal. Create a subgoal only when you can name a concrete research topic, deliverable, or handoff slice.",
       "- Prefer topic titles for subgoals. Do not use generic names like 'Subgoal sg-2'.",
+      "- Give each subgoal a stable topicKey in kebab-case, such as speech-gating, subtitle-alignment, or chat-rescoring. Reuse the same topicKey when new evidence belongs to the same topic.",
       "- If new evidence belongs to a materially different research axis, acceptance contract, deliverable, or downstream owner, create a new subgoal instead of overloading an existing one.",
-      "- Prefer updating the relevant subgoal over merely describing progress in free text. Keep subgoalUpdates.summary short, and store durable details in addFacts/addOpenQuestions/addResolvedDecisions/addAcceptanceCriteria/addRelevantFiles/nextAction.",
+      "- subgoalUpdates are optional. If you are only sharing an opinion, objection, or extra evidence, teamMessage alone is fine.",
+      "- Use subgoalUpdates when you create a card, change stage/assignee/decisionState/acceptance/nextAction, or add durable facts that should stay on the board.",
+      "- Keep subgoalUpdates.summary short, and store durable details in addFacts/addOpenQuestions/addResolvedDecisions/addAcceptanceCriteria/addRelevantFiles/nextAction.",
       "- If you are not the current assignee or a coordination owner for an existing subgoal, prefer append-only updates instead of changing stage, decisionState, or assignee.",
       "- Only coordination owners should canonicalize duplicates by setting mergedIntoSubgoalId on the source subgoal. Do not rewrite or delete history in free text.",
       "- Use decisionState deliberately: open while exploring, disputed when contradictions remain, resolved only when the core contract is settled enough for downstream routing.",
@@ -252,7 +264,7 @@ export class CodexAgentProcess {
       "- Implementation and review can reopen research. If downstream evidence changes assumptions, acceptance, eval contracts, or operator workflow, move the affected subgoal back to researching instead of trapping it in a build/review loop.",
       "Return exactly this shape between the XML tags:",
       "<codex_research_team-response>",
-      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"title":"subtitle timing contract","summary":"Define the timing contract for subtitle rows before implementation.","addFacts":["Current timing source differs between export paths."],"addOpenQuestions":["Which timestamp source is canonical?"],"addRelevantFiles":["src/subtitles.ts"],"nextAction":"researchers should settle the canonical timestamp source","stage":"researching","decisionState":"open","assigneeAgentId":null,"mergedIntoSubgoalId":null}],"completion":"continue"}',
+      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"title":"subtitle timing contract","topicKey":"subtitle-alignment","summary":"Define the timing contract for subtitle rows before implementation.","addFacts":["Current timing source differs between export paths."],"addOpenQuestions":["Which timestamp source is canonical?"],"addRelevantFiles":["src/subtitles.ts"],"nextAction":"researchers should settle the canonical timestamp source","stage":"researching","decisionState":"open","assigneeAgentId":null,"mergedIntoSubgoalId":null}],"completion":"continue"}',
       "</codex_research_team-response>",
       `Finish with this token on its own line: ${token}`,
     ].join("\n\n");
@@ -272,6 +284,7 @@ export class CodexAgentProcess {
     parsed.runtimeDiagnostics = {
       sawFileChange: result.sawFileChange,
       sawPolicyWriteBlock: result.sawPolicyWriteBlock,
+      sawBroadDataLoad: result.sawBroadDataLoad,
     };
     if (!result.sawToken) {
       if (!hasStructuredResponseEnvelope(result.responseText)) {
@@ -337,6 +350,7 @@ export class CodexAgentProcess {
       const runState = {
         sawFileChange: false,
         sawPolicyWriteBlock: false,
+        sawBroadDataLoad: false,
       };
       let settled = false;
 
@@ -405,6 +419,7 @@ export class CodexAgentProcess {
           stderrText: stderrBuffer.trim(),
           sawFileChange: runState.sawFileChange,
           sawPolicyWriteBlock: runState.sawPolicyWriteBlock,
+          sawBroadDataLoad: runState.sawBroadDataLoad,
         });
       });
     });
@@ -413,7 +428,7 @@ export class CodexAgentProcess {
   private handleStdoutLine(
     line: string,
     agentMessages: string[],
-    runState: { sawFileChange: boolean; sawPolicyWriteBlock: boolean },
+    runState: { sawFileChange: boolean; sawPolicyWriteBlock: boolean; sawBroadDataLoad: boolean },
   ): void {
     const trimmed = line.trim();
     if (!trimmed) {
@@ -474,7 +489,7 @@ export class CodexAgentProcess {
       changes?: Array<{ path?: string; kind?: string }>;
     },
     agentMessages: string[],
-    runState: { sawFileChange: boolean; sawPolicyWriteBlock: boolean },
+    runState: { sawFileChange: boolean; sawPolicyWriteBlock: boolean; sawBroadDataLoad: boolean },
   ): void {
     const type = String(item.type ?? "").trim() || "item";
     const text = String(item.text ?? "").trim();
@@ -502,6 +517,9 @@ export class CodexAgentProcess {
         if (output.toLowerCase().includes("rejected: blocked by policy") && looksLikeWriteProbeCommand(command)) {
           runState.sawPolicyWriteBlock = true;
         }
+      }
+      if (looksLikeBroadDataLoadCommand(command)) {
+        runState.sawBroadDataLoad = true;
       }
       return;
     }
@@ -645,11 +663,16 @@ function normalizeParsedTurnResult(parsed: Partial<AgentTurnResult> & { teamMess
     ? parsed.subgoalUpdates
         .filter((item) => item && typeof item === "object")
         .map((item) => ({
-          id: String((item as Record<string, unknown>).id ?? "").trim() || null,
+          id: String(
+            (item as Record<string, unknown>).id
+            ?? (item as Record<string, unknown>).subgoalId
+            ?? "",
+          ).trim() || null,
           expectedRevision: Number.isFinite(Number((item as Record<string, unknown>).expectedRevision))
             ? Math.max(1, Number((item as Record<string, unknown>).expectedRevision))
             : null,
           title: String((item as Record<string, unknown>).title ?? "").trim() || null,
+          topicKey: String((item as Record<string, unknown>).topicKey ?? "").trim() || null,
           summary: String((item as Record<string, unknown>).summary ?? "").trim() || null,
           addFacts: normalizeStringArray((item as Record<string, unknown>).addFacts),
           addOpenQuestions: normalizeStringArray((item as Record<string, unknown>).addOpenQuestions),

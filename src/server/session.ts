@@ -166,6 +166,39 @@ function normalizeNextAction(value: unknown): string | null {
   return normalized || null;
 }
 
+function stemTopicToken(token: string): string {
+  return String(token ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .replace(/(ing|ed|ies|s)$/, "")
+    .trim();
+}
+
+function topicTokens(text: string): string[] {
+  const stopWords = new Set([
+    "the", "and", "for", "with", "that", "this", "from", "into", "only", "card", "canon", "canonical", "current",
+    "keep", "promote", "route", "new", "shared", "active", "queued", "slice", "review", "reopen", "reopened",
+    "confirm", "confirmed", "found", "delta", "contract", "work", "topic",
+  ]);
+  const raw = compactWhitespace(text)
+    .toLowerCase()
+    .replace(/[`"'()[\]{}:;,.!?/\\_-]+/g, " ")
+    .split(/\s+/)
+    .map((token) => stemTopicToken(token))
+    .filter((token) => token && token.length >= 3 && !stopWords.has(token));
+  return [...new Set(raw)];
+}
+
+function topicSimilarity(left: string, right: string): number {
+  const leftTokens = topicTokens(left);
+  const rightTokens = topicTokens(right);
+  if (leftTokens.length === 0 || rightTokens.length === 0) {
+    return 0;
+  }
+  const overlap = leftTokens.filter((token) => rightTokens.includes(token)).length;
+  return overlap / Math.min(leftTokens.length, rightTokens.length);
+}
+
 function extractTargetAgentIds(metadata: Record<string, unknown> | undefined): string[] {
   const multi = Array.isArray(metadata?.targetAgentIds)
     ? metadata.targetAgentIds.map((item) => String(item ?? "").trim()).filter(Boolean)
@@ -358,6 +391,14 @@ function normalizeExpectedRevision(value: unknown): number | null {
   return normalized > 0 ? normalized : null;
 }
 
+function normalizeTopicKey(value: unknown): string | null {
+  const tokens = topicTokens(String(value ?? ""));
+  if (tokens.length === 0) {
+    return null;
+  }
+  return tokens.slice(0, 5).join("-");
+}
+
 export class LiveSession {
   readonly id: string;
   private readonly config: AppConfig;
@@ -406,6 +447,10 @@ export class LiveSession {
         ? options.snapshot.subgoals.map((subgoal) => ({
             id: String(subgoal?.id ?? "").trim(),
             title: String(subgoal?.title ?? "").trim() || "Untitled subgoal",
+            topicKey:
+              normalizeTopicKey(subgoal?.topicKey)
+              || normalizeTopicKey(`${subgoal?.title ?? ""} ${subgoal?.summary ?? ""}`)
+              || String(subgoal?.id ?? "topic"),
             summary: String(subgoal?.summary ?? "").trim(),
             facts: normalizeMemoryList(subgoal?.facts, SUBGOAL_FACT_LIMIT),
             openQuestions: normalizeMemoryList(subgoal?.openQuestions, SUBGOAL_QUESTION_LIMIT),
@@ -594,7 +639,7 @@ export class LiveSession {
     };
   }
 
-  snapshot(): SessionSnapshot {
+  snapshot(isLive = this.status !== "stopped"): SessionSnapshot {
     const totalUsage = [...this.agents.values()].reduce((accumulator, entry) => addTokenUsage(accumulator, entry.snapshot.totalUsage), emptyTokenUsage());
     return {
       id: this.id,
@@ -605,7 +650,7 @@ export class LiveSession {
       createdAt: this.id.slice(0, 15),
       updatedAt: this.updatedAt,
       status: this.status,
-      isLive: true,
+      isLive,
       eventCount: this.sequence,
       subgoalRevision: this.subgoalRevision,
       agentCount: this.agents.size,
@@ -726,6 +771,24 @@ export class LiveSession {
     }
   }
 
+  private clearDeferredPending(agent: RuntimeAgent): void {
+    if (!this.requiresGoalBoardOwnership(agent)) {
+      return;
+    }
+    if (this.hasOperatorOverride(agent)) {
+      return;
+    }
+    if (this.goalBoardNeedsAttention(agent)) {
+      return;
+    }
+    if (!hasPendingDigest(agent.pendingDigest)) {
+      return;
+    }
+    agent.pendingDigest = emptyPendingDigest();
+    agent.snapshot.pendingSignals = 0;
+    this.persistAgent(agent.preset.id);
+  }
+
   private rebuildPendingDigestsFromHistory(): void {
     const events = readSessionEvents(this.files.eventsJsonl);
     for (const agent of this.agents.values()) {
@@ -779,6 +842,7 @@ export class LiveSession {
       return;
     }
     if (this.shouldDeferAgent(agent)) {
+      this.clearDeferredPending(agent);
       this.updateAgentSnapshot(agentId, { status: "idle" });
       return;
     }
@@ -845,9 +909,12 @@ export class LiveSession {
     if (!agent) {
       return;
     }
-    const normalizedResult = this.shouldSuppressPolicyWriteProbeBlocker(agent, result)
+    let normalizedResult = this.shouldSuppressPolicyWriteProbeBlocker(agent, result)
       ? this.sanitizePolicyWriteProbeBlocker(result)
       : result;
+    if (this.shouldSuppressBroadDataLoadTurn(agent, normalizedResult)) {
+      normalizedResult = this.sanitizeBroadDataLoadTurn(normalizedResult);
+    }
     const obsoleteConflicts = this.buildObsoleteTurnConflicts(agentId, inFlightSubgoalRefs);
     const hasRequestedStateMutation = Array.isArray(normalizedResult.subgoalUpdates) && normalizedResult.subgoalUpdates.length > 0;
     const hasMeaningfulTurnOutput = hasRequestedStateMutation || Boolean(normalizedResult.teamMessage) || normalizedResult.completion === "done" || normalizedResult.completion === "blocked";
@@ -1080,7 +1147,7 @@ export class LiveSession {
   }
 
   private persistSession(): void {
-    writeSessionSnapshot(this.files, this.snapshot());
+    writeSessionSnapshot(this.files, this.snapshot(false));
   }
 
   private resetGoalBoard(goal: string, actor: string): void {
@@ -1132,6 +1199,98 @@ export class LiveSession {
     return Boolean(runtime && Array.isArray(runtime.preset.policy?.ownedStages) && runtime.preset.policy.ownedStages.includes(stage));
   }
 
+  private canCreateSubgoal(agentId: string): boolean {
+    const runtime = this.agents.get(agentId);
+    const ownedStages = Array.isArray(runtime?.preset.policy?.ownedStages) ? runtime.preset.policy.ownedStages : [];
+    return ownedStages.some((stage) => stage === "open" || stage === "researching" || stage === "ready_for_build" || stage === "blocked");
+  }
+
+  private subgoalTopicText(subgoal: Pick<SessionSubgoal, "title" | "summary">): string {
+    return compactWhitespace(`${subgoal.title || ""} ${subgoal.summary || ""}`);
+  }
+
+  private canonicalSubgoalForId(subgoalId: string | null | undefined): SessionSubgoal | null {
+    const normalizedId = String(subgoalId ?? "").trim();
+    if (!normalizedId) {
+      return null;
+    }
+    const visited = new Set<string>();
+    let current = this.subgoals.find((subgoal) => subgoal.id === normalizedId) ?? null;
+    while (current?.mergedIntoSubgoalId && !visited.has(current.id)) {
+      visited.add(current.id);
+      const next = this.subgoals.find((subgoal) => subgoal.id === current?.mergedIntoSubgoalId) ?? null;
+      if (!next) {
+        break;
+      }
+      current = next;
+    }
+    return current;
+  }
+
+  private deriveSubgoalTopicKey(update: SubgoalUpdate, fallbackKey: string): string {
+    return (
+      normalizeTopicKey(update.topicKey)
+      || normalizeTopicKey([
+        update.title,
+        update.summary,
+        ...(Array.isArray(update.addResolvedDecisions) ? update.addResolvedDecisions : []),
+        ...(Array.isArray(update.addOpenQuestions) ? update.addOpenQuestions : []),
+        ...(Array.isArray(update.addFacts) ? update.addFacts : []),
+      ].filter(Boolean).join(" "))
+      || fallbackKey
+    );
+  }
+
+  private findClosestActiveSubgoal(update: SubgoalUpdate, options?: { excludeIds?: string[]; allowArchived?: boolean }): SessionSubgoal | null {
+    const probeTitle = this.deriveSubgoalTitle(update, "candidate");
+    const probeTopicKey = this.deriveSubgoalTopicKey(update, "");
+    const probeText = compactWhitespace(`${probeTitle} ${update.summary || ""}`);
+    if (!probeText && !probeTopicKey) {
+      return null;
+    }
+    const excludeIds = new Set((options?.excludeIds || []).map((value) => String(value ?? "").trim()).filter(Boolean));
+    const candidates = (options?.allowArchived ? this.subgoals : this.activeSubgoals())
+      .filter((subgoal) => !excludeIds.has(subgoal.id));
+    let best: SessionSubgoal | null = null;
+    let bestScore = 0;
+    for (const candidate of candidates) {
+      let score = topicSimilarity(probeText, this.subgoalTopicText(candidate));
+      if (probeTopicKey && candidate.topicKey === probeTopicKey) {
+        score = Math.max(score, 0.98);
+      }
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    return bestScore >= 0.74 ? best : null;
+  }
+
+  private subgoalPriority(subgoal: SessionSubgoal): number {
+    const stageScore = (() => {
+      switch (subgoal.stage) {
+        case "ready_for_review":
+          return 60;
+        case "building":
+          return 55;
+        case "ready_for_build":
+          return 45;
+        case "blocked":
+          return 35;
+        case "researching":
+          return 25;
+        case "open":
+          return 20;
+        case "done":
+          return 10;
+        default:
+          return 0;
+      }
+    })();
+    const decisionScore = subgoal.decisionState === "resolved" ? 20 : subgoal.decisionState === "disputed" ? 10 : 0;
+    return stageScore + decisionScore + Number(subgoal.revision || 0) / 1000;
+  }
+
   private requiresGoalBoardOwnership(agent: RuntimeAgent): boolean {
     const ownedStages = Array.isArray(agent.preset.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
     return ownedStages.length > 0 && ownedStages.every((stage) => stage === "building" || stage === "ready_for_review");
@@ -1152,10 +1311,11 @@ export class LiveSession {
 
   private hasStateMutation(update: SubgoalUpdate, existing: SessionSubgoal | null): boolean {
     if (!existing) {
-      return Boolean(update.title || update.summary || update.stage || update.decisionState || update.reopenReason || update.assigneeAgentId || update.mergedIntoSubgoalId);
+      return Boolean(update.title || update.topicKey || update.summary || update.stage || update.decisionState || update.reopenReason || update.assigneeAgentId || update.mergedIntoSubgoalId);
     }
     return Boolean(
       (update.title && update.title !== existing.title) ||
+      (update.topicKey && normalizeTopicKey(update.topicKey) !== existing.topicKey) ||
       (update.summary && update.summary !== existing.summary) ||
       (update.stage && update.stage !== existing.stage) ||
       (update.decisionState && update.decisionState !== existing.decisionState) ||
@@ -1198,6 +1358,7 @@ export class LiveSession {
     const id = String(update.id ?? "").trim() || null;
     const expectedRevision = normalizeExpectedRevision(update.expectedRevision);
     const title = String(update.title ?? "").trim() || null;
+    const topicKey = normalizeTopicKey(update.topicKey);
     const summary = String(update.summary ?? "").trim() || null;
     const addFacts = normalizeMemoryList(update.addFacts, SUBGOAL_FACT_LIMIT);
     const addOpenQuestions = normalizeMemoryList(update.addOpenQuestions, SUBGOAL_QUESTION_LIMIT);
@@ -1212,7 +1373,7 @@ export class LiveSession {
     const mergedIntoSubgoalId = update.mergedIntoSubgoalId !== undefined
       ? (String(update.mergedIntoSubgoalId ?? "").trim() || null)
       : undefined;
-    if (!id && mergedIntoSubgoalId !== undefined) {
+    if (!id && mergedIntoSubgoalId !== undefined && mergedIntoSubgoalId !== null) {
       return null;
     }
     if (
@@ -1238,6 +1399,7 @@ export class LiveSession {
       id,
       expectedRevision,
       title,
+      topicKey,
       summary,
       addFacts,
       addOpenQuestions,
@@ -1427,6 +1589,39 @@ export class LiveSession {
     };
   }
 
+  private shouldSuppressBroadDataLoadTurn(agent: RuntimeAgent, result: AgentTurnResult): boolean {
+    const ownsDiscoveryStage =
+      Array.isArray(agent.preset.policy?.ownedStages) &&
+      (agent.preset.policy.ownedStages.includes("open") || agent.preset.policy.ownedStages.includes("researching"));
+    const ownsOnlyReviewStage =
+      Array.isArray(agent.preset.policy?.ownedStages) &&
+      agent.preset.policy.ownedStages.length > 0 &&
+      agent.preset.policy.ownedStages.every((stage) => stage === "ready_for_review");
+    if (!result.runtimeDiagnostics?.sawBroadDataLoad) {
+      return false;
+    }
+    if (!ownsDiscoveryStage && !ownsOnlyReviewStage) {
+      return false;
+    }
+    if (this.hasOperatorOverride(agent) || this.currentTurnHasTargetedRequest(agent)) {
+      return false;
+    }
+    return !Array.isArray(result.subgoalUpdates) || result.subgoalUpdates.length === 0;
+  }
+
+  private sanitizeBroadDataLoadTurn(result: AgentTurnResult): AgentTurnResult {
+    return {
+      ...result,
+      shouldReply: false,
+      teamMessage: "",
+      workingNotes: [
+        ...(Array.isArray(result.workingNotes) ? result.workingNotes : []),
+        "Suppressed a turn that relied on a broad dataset or pipeline load without changing the goal board. Reuse existing aggregates or narrow the probe next time.",
+      ],
+      completion: "continue",
+    };
+  }
+
   private recordSubgoalConflicts(conflicts: StaleSubgoalConflict[]): string[] {
     const changedIds = new Set<string>();
     for (const conflict of conflicts) {
@@ -1455,6 +1650,55 @@ export class LiveSession {
     return [...changedIds];
   }
 
+  private canonicalizeDuplicateSubgoals(agentId: string): string[] {
+    if (!this.canCanonicalizeSubgoal(agentId)) {
+      return [];
+    }
+    const changedIds = new Set<string>();
+    const candidates = this.activeSubgoals()
+      .filter((subgoal) => subgoal.stage !== "building" && subgoal.stage !== "ready_for_review")
+      .sort((left, right) => this.subgoalPriority(right) - this.subgoalPriority(left));
+    const consumed = new Set<string>();
+    for (let index = 0; index < candidates.length; index += 1) {
+      const target = candidates[index];
+      if (!target || consumed.has(target.id)) {
+        continue;
+      }
+      for (let nextIndex = index + 1; nextIndex < candidates.length; nextIndex += 1) {
+        const source = candidates[nextIndex];
+        if (!source || consumed.has(source.id)) {
+          continue;
+        }
+        const sameTopicKey = Boolean(target.topicKey && source.topicKey && target.topicKey === source.topicKey);
+        const score = topicSimilarity(this.subgoalTopicText(target), this.subgoalTopicText(source));
+        if (!sameTopicKey && score < 0.8) {
+          continue;
+        }
+        const sourceIndex = this.subgoals.findIndex((item) => item.id === source.id);
+        if (sourceIndex < 0) {
+          continue;
+        }
+        const timestamp = nowIso();
+        this.subgoalRevision += 1;
+        this.subgoals[sourceIndex] = {
+          ...this.subgoals[sourceIndex],
+          mergedIntoSubgoalId: target.id,
+          archivedAt: timestamp,
+          archivedBy: agentId,
+          updatedAt: timestamp,
+          updatedBy: agentId,
+          revision: this.subgoalRevision,
+          activeConflict: false,
+          lastConflictAt: null,
+          lastConflictSummary: null,
+        };
+        consumed.add(source.id);
+        changedIds.add(source.id);
+      }
+    }
+    return [...changedIds];
+  }
+
   private applySubgoalUpdates(agentId: string, updates: SubgoalUpdate[] | undefined): SubgoalUpdateResult {
     const normalized = Array.isArray(updates) ? updates.map((update) => this.sanitizeSubgoalUpdate(update)).filter(Boolean) as SubgoalUpdate[] : [];
     if (normalized.length === 0) {
@@ -1465,14 +1709,18 @@ export class LiveSession {
     let blockedBuildPromotion = false;
     const conflicts: StaleSubgoalConflict[] = [];
     for (const update of normalized.slice(0, 8)) {
-      const existingIndex = update.id ? this.subgoals.findIndex((subgoal) => subgoal.id === update.id) : -1;
+      const existingMatch = update.id
+        ? this.canonicalSubgoalForId(update.id)
+        : this.findClosestActiveSubgoal(update);
+      const redirectedFromMerged = Boolean(update.id && existingMatch && existingMatch.id !== update.id);
+      const existingIndex = existingMatch ? this.subgoals.findIndex((subgoal) => subgoal.id === existingMatch.id) : -1;
       const timestamp = nowIso();
       if (existingIndex >= 0) {
         const existing = this.subgoals[existingIndex];
         if (this.isArchivedSubgoal(existing)) {
           continue;
         }
-        const canMutateState = this.canMutateSubgoal(agentId, existing);
+        const canMutateState = !redirectedFromMerged && this.canMutateSubgoal(agentId, existing);
         const wantsStateMutation = this.hasStateMutation(update, existing);
         let requestedStage = canMutateState && update.stage ? normalizeSubgoalStage(update.stage, existing.stage) : existing.stage;
         let decisionState = canMutateState ? this.inferNextDecisionState(existing, update, requestedStage) : existing.decisionState;
@@ -1560,6 +1808,7 @@ export class LiveSession {
         this.subgoals[existingIndex] = {
           ...existing,
           title: canMutateState ? (update.title || existing.title) : existing.title,
+          topicKey: canMutateState ? this.deriveSubgoalTopicKey(update, existing.topicKey) : existing.topicKey,
           summary: canMutateState ? (update.summary || existing.summary) : existing.summary,
           facts: mergeMemoryList(existing.facts, [...inferredFact, ...(update.addFacts || [])], SUBGOAL_FACT_LIMIT),
           openQuestions: mergeMemoryList(existing.openQuestions, update.addOpenQuestions, SUBGOAL_QUESTION_LIMIT),
@@ -1586,6 +1835,10 @@ export class LiveSession {
         continue;
       }
 
+      if (!this.canCreateSubgoal(agentId)) {
+        continue;
+      }
+
       let requestedStage = normalizeSubgoalStage(update.stage, "researching");
       const id = this.nextSubgoalId();
       this.subgoalRevision += 1;
@@ -1609,6 +1862,7 @@ export class LiveSession {
       this.subgoals.push({
         id,
         title: this.deriveSubgoalTitle(update, id),
+        topicKey: this.deriveSubgoalTopicKey(update, `topic-${id}`),
         summary: update.summary || "No summary provided.",
         facts: mergeMemoryList([], update.addFacts, SUBGOAL_FACT_LIMIT),
         openQuestions: mergeMemoryList([], update.addOpenQuestions, SUBGOAL_QUESTION_LIMIT),
@@ -1632,6 +1886,10 @@ export class LiveSession {
         lastConflictSummary: buildGateMessage,
       });
       changedIds.add(id);
+    }
+
+    for (const changedId of this.canonicalizeDuplicateSubgoals(agentId)) {
+      changedIds.add(changedId);
     }
 
     this.subgoals = [...this.subgoals].sort((left, right) => {
