@@ -56,7 +56,7 @@ interface SubgoalUpdateResult {
 }
 
 interface StaleSubgoalConflict {
-  reason: "stale_update" | "obsolete_turn";
+  reason: "stale_update" | "obsolete_turn" | "done_soft_note" | "done_reopen_suggestion";
   subgoalId: string;
   agentId: string;
   expectedRevision: number;
@@ -164,39 +164,6 @@ function mergeMemoryList(existing: string[], additions: unknown, limit: number, 
 function normalizeNextAction(value: unknown): string | null {
   const normalized = shortenText(String(value ?? "").trim(), 200);
   return normalized || null;
-}
-
-function stemTopicToken(token: string): string {
-  return String(token ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "")
-    .replace(/(ing|ed|ies|s)$/, "")
-    .trim();
-}
-
-function topicTokens(text: string): string[] {
-  const stopWords = new Set([
-    "the", "and", "for", "with", "that", "this", "from", "into", "only", "card", "canon", "canonical", "current",
-    "keep", "promote", "route", "new", "shared", "active", "queued", "slice", "review", "reopen", "reopened",
-    "confirm", "confirmed", "found", "delta", "contract", "work", "topic",
-  ]);
-  const raw = compactWhitespace(text)
-    .toLowerCase()
-    .replace(/[`"'()[\]{}:;,.!?/\\_-]+/g, " ")
-    .split(/\s+/)
-    .map((token) => stemTopicToken(token))
-    .filter((token) => token && token.length >= 3 && !stopWords.has(token));
-  return [...new Set(raw)];
-}
-
-function topicSimilarity(left: string, right: string): number {
-  const leftTokens = topicTokens(left);
-  const rightTokens = topicTokens(right);
-  if (leftTokens.length === 0 || rightTokens.length === 0) {
-    return 0;
-  }
-  const overlap = leftTokens.filter((token) => rightTokens.includes(token)).length;
-  return overlap / Math.min(leftTokens.length, rightTokens.length);
 }
 
 function extractTargetAgentIds(metadata: Record<string, unknown> | undefined): string[] {
@@ -392,11 +359,16 @@ function normalizeExpectedRevision(value: unknown): number | null {
 }
 
 function normalizeTopicKey(value: unknown): string | null {
-  const tokens = topicTokens(String(value ?? ""));
-  if (tokens.length === 0) {
+  const normalized = compactWhitespace(String(value ?? ""))
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+  if (!normalized) {
     return null;
   }
-  return tokens.slice(0, 5).join("-");
+  const parts = normalized.split("-").filter(Boolean).slice(0, 6);
+  return parts.length > 0 ? parts.join("-") : null;
 }
 
 export class LiveSession {
@@ -1057,17 +1029,26 @@ export class LiveSession {
           .map((conflict) => conflict.message)
           .filter(Boolean)
           .join(" | ");
+        const hasObsoleteTurn = grouped.conflicts.some((conflict) => conflict.reason === "obsolete_turn");
+        const onlyDoneSoftNotes = grouped.conflicts.every((conflict) => conflict.reason === "done_soft_note");
+        const hasDoneReopenSuggestion = grouped.conflicts.some((conflict) => conflict.reason === "done_reopen_suggestion");
         this.status = "running";
         this.publish(
           "system",
           this.operatorChannel(),
-          shouldSuppressObsoleteTurn && grouped.conflicts.some((conflict) => conflict.reason === "obsolete_turn") && normalizedResult.teamMessage
-            ? `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Suppressed stale handoff: ${shortenText(normalizedResult.teamMessage, 220)} Re-read the latest goal board before changing this subgoal again.`
-            : `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Re-read the latest goal board before changing this subgoal again.`,
+          onlyDoneSoftNotes
+            ? `Stale note on ${subgoalId}: ${shortenText(conflictSummary, 320)}`
+            : hasDoneReopenSuggestion
+              ? `Reopen suggestion on ${subgoalId}: ${shortenText(conflictSummary, 320)} Re-check whether the completed card should reopen.`
+              : shouldSuppressObsoleteTurn && hasObsoleteTurn && normalizedResult.teamMessage
+                ? `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Suppressed stale handoff: ${shortenText(normalizedResult.teamMessage, 220)} Re-read the latest goal board before changing this subgoal again.`
+                : `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Re-read the latest goal board before changing this subgoal again.`,
           {
             operatorEvent: true,
-            conflictEvent: true,
-            obsoleteEvent: grouped.conflicts.some((conflict) => conflict.reason === "obsolete_turn"),
+            conflictEvent: !onlyDoneSoftNotes && !hasDoneReopenSuggestion,
+            staleNoteEvent: onlyDoneSoftNotes,
+            reopenSuggestionEvent: hasDoneReopenSuggestion,
+            obsoleteEvent: hasObsoleteTurn,
             subgoalIds: [subgoalId],
             staleUpdateBy: latestConflict.agentId,
             expectedRevision: latestConflict.expectedRevision,
@@ -1205,10 +1186,6 @@ export class LiveSession {
     return ownedStages.some((stage) => stage === "open" || stage === "researching" || stage === "ready_for_build" || stage === "blocked");
   }
 
-  private subgoalTopicText(subgoal: Pick<SessionSubgoal, "title" | "summary">): string {
-    return compactWhitespace(`${subgoal.title || ""} ${subgoal.summary || ""}`);
-  }
-
   private canonicalSubgoalForId(subgoalId: string | null | undefined): SessionSubgoal | null {
     const normalizedId = String(subgoalId ?? "").trim();
     if (!normalizedId) {
@@ -1239,56 +1216,6 @@ export class LiveSession {
       ].filter(Boolean).join(" "))
       || fallbackKey
     );
-  }
-
-  private findClosestActiveSubgoal(update: SubgoalUpdate, options?: { excludeIds?: string[]; allowArchived?: boolean }): SessionSubgoal | null {
-    const probeTitle = this.deriveSubgoalTitle(update, "candidate");
-    const probeTopicKey = this.deriveSubgoalTopicKey(update, "");
-    const probeText = compactWhitespace(`${probeTitle} ${update.summary || ""}`);
-    if (!probeText && !probeTopicKey) {
-      return null;
-    }
-    const excludeIds = new Set((options?.excludeIds || []).map((value) => String(value ?? "").trim()).filter(Boolean));
-    const candidates = (options?.allowArchived ? this.subgoals : this.activeSubgoals())
-      .filter((subgoal) => !excludeIds.has(subgoal.id));
-    let best: SessionSubgoal | null = null;
-    let bestScore = 0;
-    for (const candidate of candidates) {
-      let score = topicSimilarity(probeText, this.subgoalTopicText(candidate));
-      if (probeTopicKey && candidate.topicKey === probeTopicKey) {
-        score = Math.max(score, 0.98);
-      }
-      if (score > bestScore) {
-        best = candidate;
-        bestScore = score;
-      }
-    }
-    return bestScore >= 0.74 ? best : null;
-  }
-
-  private subgoalPriority(subgoal: SessionSubgoal): number {
-    const stageScore = (() => {
-      switch (subgoal.stage) {
-        case "ready_for_review":
-          return 60;
-        case "building":
-          return 55;
-        case "ready_for_build":
-          return 45;
-        case "blocked":
-          return 35;
-        case "researching":
-          return 25;
-        case "open":
-          return 20;
-        case "done":
-          return 10;
-        default:
-          return 0;
-      }
-    })();
-    const decisionScore = subgoal.decisionState === "resolved" ? 20 : subgoal.decisionState === "disputed" ? 10 : 0;
-    return stageScore + decisionScore + Number(subgoal.revision || 0) / 1000;
   }
 
   private requiresGoalBoardOwnership(agent: RuntimeAgent): boolean {
@@ -1471,8 +1398,12 @@ export class LiveSession {
     if (expectedRevision === currentRevision) {
       return null;
     }
+    const reason =
+      existing.stage === "done"
+        ? ((requestedStage === "researching" || requestedStage === "blocked") ? "done_reopen_suggestion" : "done_soft_note")
+        : "stale_update";
     return {
-      reason: "stale_update",
+      reason,
       subgoalId: existing.id,
       agentId,
       expectedRevision,
@@ -1515,16 +1446,23 @@ export class LiveSession {
     }
     const conflicts: StaleSubgoalConflict[] = [];
     for (const trackedRef of trackedRefs) {
-      const existing = this.subgoals.find((subgoal) => subgoal.id === trackedRef.id);
+      const existing = this.canonicalSubgoalForId(trackedRef.id);
       if (!existing) {
+        continue;
+      }
+      if (existing.id !== trackedRef.id) {
         continue;
       }
       const currentRevision = Number(existing.revision || 0);
       if (currentRevision === trackedRef.revision) {
         continue;
       }
+      const reason =
+        existing.stage === "done"
+          ? ((trackedRef.stage === "researching" || trackedRef.stage === "blocked") ? "done_reopen_suggestion" : "done_soft_note")
+          : "obsolete_turn";
       conflicts.push({
-        reason: "obsolete_turn",
+        reason,
         subgoalId: existing.id,
         agentId,
         expectedRevision: trackedRef.revision,
@@ -1631,70 +1569,23 @@ export class LiveSession {
       }
       const existing = this.subgoals[existingIndex];
       const timestamp = nowIso();
+      const isDoneSoftNote = conflict.reason === "done_soft_note";
+      const isDoneReopenSuggestion = conflict.reason === "done_reopen_suggestion";
       this.subgoals[existingIndex] = {
         ...existing,
         updatedAt: timestamp,
         updatedBy: "system",
         revision: existing.revision,
         conflictCount: Math.max(0, Number(existing.conflictCount || 0)) + 1,
-        activeConflict: true,
+        activeConflict: !(isDoneSoftNote || isDoneReopenSuggestion),
         lastConflictAt: timestamp,
-        lastConflictSummary: conflict.message,
+        lastConflictSummary: isDoneReopenSuggestion ? `Reopen suggestion: ${conflict.message}` : conflict.message,
       };
       changedIds.add(existing.id);
     }
     if (changedIds.size > 0) {
       this.updatedAt = nowIso();
       this.persistSession();
-    }
-    return [...changedIds];
-  }
-
-  private canonicalizeDuplicateSubgoals(agentId: string): string[] {
-    if (!this.canCanonicalizeSubgoal(agentId)) {
-      return [];
-    }
-    const changedIds = new Set<string>();
-    const candidates = this.activeSubgoals()
-      .filter((subgoal) => subgoal.stage !== "building" && subgoal.stage !== "ready_for_review")
-      .sort((left, right) => this.subgoalPriority(right) - this.subgoalPriority(left));
-    const consumed = new Set<string>();
-    for (let index = 0; index < candidates.length; index += 1) {
-      const target = candidates[index];
-      if (!target || consumed.has(target.id)) {
-        continue;
-      }
-      for (let nextIndex = index + 1; nextIndex < candidates.length; nextIndex += 1) {
-        const source = candidates[nextIndex];
-        if (!source || consumed.has(source.id)) {
-          continue;
-        }
-        const sameTopicKey = Boolean(target.topicKey && source.topicKey && target.topicKey === source.topicKey);
-        const score = topicSimilarity(this.subgoalTopicText(target), this.subgoalTopicText(source));
-        if (!sameTopicKey && score < 0.8) {
-          continue;
-        }
-        const sourceIndex = this.subgoals.findIndex((item) => item.id === source.id);
-        if (sourceIndex < 0) {
-          continue;
-        }
-        const timestamp = nowIso();
-        this.subgoalRevision += 1;
-        this.subgoals[sourceIndex] = {
-          ...this.subgoals[sourceIndex],
-          mergedIntoSubgoalId: target.id,
-          archivedAt: timestamp,
-          archivedBy: agentId,
-          updatedAt: timestamp,
-          updatedBy: agentId,
-          revision: this.subgoalRevision,
-          activeConflict: false,
-          lastConflictAt: null,
-          lastConflictSummary: null,
-        };
-        consumed.add(source.id);
-        changedIds.add(source.id);
-      }
     }
     return [...changedIds];
   }
@@ -1711,7 +1602,7 @@ export class LiveSession {
     for (const update of normalized.slice(0, 8)) {
       const existingMatch = update.id
         ? this.canonicalSubgoalForId(update.id)
-        : this.findClosestActiveSubgoal(update);
+        : null;
       const redirectedFromMerged = Boolean(update.id && existingMatch && existingMatch.id !== update.id);
       const existingIndex = existingMatch ? this.subgoals.findIndex((subgoal) => subgoal.id === existingMatch.id) : -1;
       const timestamp = nowIso();
@@ -1731,7 +1622,7 @@ export class LiveSession {
           blockedBuildPromotion = true;
           buildGateMessage = `Build promotion blocked for ${existing.id}: unresolved contradictions remain. Mark the subgoal decisionState=resolved before sending it to building.`;
         }
-        if (this.shouldIgnoreStaleSubgoalUpdate(existing, update) && wantsStateMutation) {
+        if (!redirectedFromMerged && this.shouldIgnoreStaleSubgoalUpdate(existing, update) && wantsStateMutation) {
           const conflict = this.buildStaleSubgoalConflict(agentId, existing, update, requestedStage);
           if (conflict) {
             for (const changedId of this.recordSubgoalConflicts([conflict])) {
@@ -1887,11 +1778,6 @@ export class LiveSession {
       });
       changedIds.add(id);
     }
-
-    for (const changedId of this.canonicalizeDuplicateSubgoals(agentId)) {
-      changedIds.add(changedId);
-    }
-
     this.subgoals = [...this.subgoals].sort((left, right) => {
       const leftArchived = this.isArchivedSubgoal(left) ? 1 : 0;
       const rightArchived = this.isArchivedSubgoal(right) ? 1 : 0;

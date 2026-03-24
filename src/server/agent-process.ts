@@ -246,7 +246,7 @@ export class CodexAgentProcess {
       "- The goal board is the source of truth for progress. Use subgoalUpdates when the board state or durable subgoal memory has actually changed.",
       "- The top-level session goal is not itself a subgoal. Create a subgoal only when you can name a concrete research topic, deliverable, or handoff slice.",
       "- Prefer topic titles for subgoals. Do not use generic names like 'Subgoal sg-2'.",
-      "- Give each subgoal a stable topicKey in kebab-case, such as speech-gating, subtitle-alignment, or chat-rescoring. Reuse the same topicKey when new evidence belongs to the same topic.",
+      "- Give each subgoal a stable topicKey in kebab-case, such as timing-contract, data-quality, or ranking-policy. Reuse the same topicKey when new evidence belongs to the same topic.",
       "- If new evidence belongs to a materially different research axis, acceptance contract, deliverable, or downstream owner, create a new subgoal instead of overloading an existing one.",
       "- subgoalUpdates are optional. If you are only sharing an opinion, objection, or extra evidence, teamMessage alone is fine.",
       "- Use subgoalUpdates when you create a card, change stage/assignee/decisionState/acceptance/nextAction, or add durable facts that should stay on the board.",
@@ -264,7 +264,7 @@ export class CodexAgentProcess {
       "- Implementation and review can reopen research. If downstream evidence changes assumptions, acceptance, eval contracts, or operator workflow, move the affected subgoal back to researching instead of trapping it in a build/review loop.",
       "Return exactly this shape between the XML tags:",
       "<codex_research_team-response>",
-      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"title":"subtitle timing contract","topicKey":"subtitle-alignment","summary":"Define the timing contract for subtitle rows before implementation.","addFacts":["Current timing source differs between export paths."],"addOpenQuestions":["Which timestamp source is canonical?"],"addRelevantFiles":["src/subtitles.ts"],"nextAction":"researchers should settle the canonical timestamp source","stage":"researching","decisionState":"open","assigneeAgentId":null,"mergedIntoSubgoalId":null}],"completion":"continue"}',
+      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"title":"timing contract","topicKey":"timing-contract","summary":"Define the canonical timing contract before implementation.","addFacts":["Current timing source differs between export paths."],"addOpenQuestions":["Which timestamp source is canonical?"],"addRelevantFiles":["src/timing.ts"],"nextAction":"researchers should settle the canonical timing source","stage":"researching","decisionState":"open","assigneeAgentId":null,"mergedIntoSubgoalId":null}],"completion":"continue"}',
       "</codex_research_team-response>",
       `Finish with this token on its own line: ${token}`,
     ].join("\n\n");
