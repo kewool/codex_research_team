@@ -45,6 +45,7 @@ interface RuntimeAgent {
   pendingDigest: PendingDigest;
   inFlightDigest: PendingDigest | null;
   inFlightSubgoalRefs: TrackedSubgoalRef[] | null;
+  retryCount: number;
   draining: boolean;
   drainTimer: ReturnType<typeof setTimeout> | null;
 }
@@ -93,6 +94,7 @@ const SUBGOAL_QUESTION_LIMIT = 4;
 const SUBGOAL_DECISION_LIMIT = 4;
 const SUBGOAL_ACCEPTANCE_LIMIT = 4;
 const SUBGOAL_FILE_LIMIT = 6;
+const TRANSIENT_TURN_RETRY_LIMIT = 3;
 
 function emptyTokenUsage(): TokenUsage {
   return {
@@ -320,6 +322,43 @@ function maxDigestSequence(digest: PendingDigest | null): number {
     }
   }
   return maxSequence;
+}
+
+function digestEvents(digest: PendingDigest | null): SessionEvent[] {
+  if (!digest) {
+    return [];
+  }
+  const events = [
+    ...(digest.latestGoal ? [digest.latestGoal] : []),
+    ...digest.operatorEvents,
+    ...digest.directInputs,
+    ...Object.values(digest.channelEvents).flat(),
+    ...digest.otherEvents,
+  ];
+  return [...events].sort((left, right) => Number(left.sequence || 0) - Number(right.sequence || 0));
+}
+
+function combinePendingDigests(...digests: Array<PendingDigest | null | undefined>): PendingDigest {
+  const combined = emptyPendingDigest();
+  const seen = new Set<number>();
+  const events = digests.flatMap((digest) => digestEvents(digest));
+  for (const event of events) {
+    const sequence = Number(event.sequence || 0);
+    if (sequence > 0 && seen.has(sequence)) {
+      continue;
+    }
+    if (sequence > 0) {
+      seen.add(sequence);
+    }
+    const next = mergePendingDigest(combined, event);
+    combined.totalCount = next.totalCount;
+    combined.latestGoal = next.latestGoal;
+    combined.operatorEvents = next.operatorEvents;
+    combined.directInputs = next.directInputs;
+    combined.channelEvents = next.channelEvents;
+    combined.otherEvents = next.otherEvents;
+  }
+  return combined;
 }
 
 function readSessionEvents(filePath: string): SessionEvent[] {
@@ -596,6 +635,7 @@ export class LiveSession {
         pendingDigest: emptyPendingDigest(),
         inFlightDigest: null,
         inFlightSubgoalRefs: null,
+        retryCount: 0,
         draining: false,
         drainTimer: null,
       });
@@ -802,6 +842,25 @@ export class LiveSession {
     }, immediate ? 0 : DRAIN_DEBOUNCE_MS);
   }
 
+  private shouldRetryTransientTurnFailure(message: string): boolean {
+    const normalized = compactWhitespace(message).toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+    return (
+      normalized.includes("max_output_tokens") ||
+      normalized.includes("stream disconnected before completion") ||
+      normalized.includes("incomplete response returned") ||
+      normalized.includes("an error occurred while processing your request")
+    );
+  }
+
+  private restoreFailedInFlightDigest(agent: RuntimeAgent, digest: PendingDigest | null): void {
+    agent.pendingDigest = combinePendingDigests(digest, agent.pendingDigest);
+    agent.snapshot.pendingSignals = agent.pendingDigest.totalCount;
+    this.persistAgent(agent.preset.id);
+  }
+
   private async drainAgent(agentId: string): Promise<void> {
     const agent = this.agents.get(agentId);
     if (!agent || agent.draining || agent.snapshot.status === "error" || agent.snapshot.status === "starting") {
@@ -850,6 +909,23 @@ export class LiveSession {
       if ((this.status === "stopping" || this.status === "stopped") && message.includes("Codex run stopped")) {
         return;
       }
+      if (this.shouldRetryTransientTurnFailure(message) && agent.retryCount < TRANSIENT_TURN_RETRY_LIMIT) {
+        agent.retryCount += 1;
+        this.restoreFailedInFlightDigest(agent, digest);
+        agent.snapshot.status = "idle";
+        agent.snapshot.waitingForInput = false;
+        agent.snapshot.lastError = "";
+        agent.snapshot.lastResponseAt = nowIso();
+        agent.snapshot.workingNotes = [
+          `Transient Codex turn failure, retrying ${agent.retryCount}/${TRANSIENT_TURN_RETRY_LIMIT}: ${shortenText(message, 240)}`,
+        ];
+        agent.snapshot.teamMessage = "";
+        this.appendAgentHistory(agent, "notes", agent.snapshot.workingNotes[0], `Retry ${agent.retryCount}`);
+        this.persistAgent(agentId);
+        this.emit({ type: "agent", sessionId: this.id, agent: { ...agent.snapshot } });
+        return;
+      }
+      agent.retryCount = 0;
       this.applyTurnResult(agentId, {
         shouldReply: false,
         workingNotes: [`Codex turn failed: ${(error as Error).message}`],
@@ -881,6 +957,7 @@ export class LiveSession {
     if (!agent) {
       return;
     }
+    agent.retryCount = 0;
     let normalizedResult = this.shouldSuppressPolicyWriteProbeBlocker(agent, result)
       ? this.sanitizePolicyWriteProbeBlocker(result)
       : result;
@@ -902,6 +979,7 @@ export class LiveSession {
       ? { changedIds: this.recordSubgoalConflicts(obsoleteConflicts), blockedBuildPromotion: false, conflicts: [] as StaleSubgoalConflict[] }
       : this.applySubgoalUpdates(agentId, normalizedResult.subgoalUpdates);
     const changedSubgoalIds = [...new Set([...subgoalResult.changedIds, ...obsoleteConflicts.map((conflict) => conflict.subgoalId)])];
+    const referencedSubgoalIds = this.referencedSubgoalIds(changedSubgoalIds, normalizedResult.subgoalUpdates, inFlightSubgoalRefs);
     if (!shouldSuppressObsoleteTurn) {
       agent.snapshot.lastSeenSubgoalRevision = this.subgoalRevision;
     }
@@ -982,6 +1060,26 @@ export class LiveSession {
       }
       return this.goalBoardNeedsAttention(target);
     });
+    if (
+      this.isDiscoveryOwner(agentId) &&
+      !this.hasOperatorOverride(agent) &&
+      !this.currentTurnHasTargetedRequest(agent) &&
+      this.actionableSubgoalsForAgent(agent).length === 0 &&
+      (!Array.isArray(normalizedResult.subgoalUpdates) || normalizedResult.subgoalUpdates.length === 0)
+    ) {
+      normalizedResult.shouldReply = false;
+      normalizedResult.teamMessage = "";
+      normalizedResult.workingNotes = [];
+    }
+    if (
+      normalizedResult.shouldReply &&
+      normalizedResult.teamMessage &&
+      this.shouldSuppressDuplicateCoordinationTurn(agent, referencedSubgoalIds, effectiveTargetAgentIds)
+    ) {
+      normalizedResult.shouldReply = false;
+      normalizedResult.teamMessage = "";
+      normalizedResult.workingNotes = [];
+    }
     if (ownsReviewStageOnly && requestedStages.has("done") && effectiveTargetAgentIds.length === 0) {
       normalizedResult.shouldReply = false;
       normalizedResult.teamMessage = "";
@@ -992,9 +1090,12 @@ export class LiveSession {
       turnCount: agent.snapshot.turnCount,
       shouldReply: normalizedResult.shouldReply,
       completion: normalizedResult.completion,
-      ...(changedSubgoalIds.length > 0 ? { subgoalIds: changedSubgoalIds } : {}),
+      ...(referencedSubgoalIds.length > 0 ? { subgoalIds: referencedSubgoalIds } : {}),
       ...(effectiveTargetAgentIds.length === 1 ? { targetAgentId: effectiveTargetAgentIds[0] } : {}),
       ...(effectiveTargetAgentIds.length > 0 ? { targetAgentIds: effectiveTargetAgentIds } : {}),
+      ...(this.canCanonicalizeSubgoal(agentId) && referencedSubgoalIds.length > 0 && effectiveTargetAgentIds.length > 0
+        ? { routingSignature: this.coordinationRoutingSignature(referencedSubgoalIds, effectiveTargetAgentIds) }
+        : {}),
     };
 
     if (normalizedResult.workingNotes.length > 0) {
@@ -1354,6 +1455,129 @@ export class LiveSession {
     return this.subgoals.filter((subgoal) => this.isArchivedSubgoal(subgoal));
   }
 
+  private discoveryOwnerIds(): string[] {
+    return [...new Set(
+      this.config.agents
+        .filter((agent) =>
+          Array.isArray(agent.policy?.ownedStages) &&
+          (agent.policy.ownedStages.includes("open") || agent.policy.ownedStages.includes("researching")),
+        )
+        .map((agent) => String(agent.id ?? "").trim())
+        .filter(Boolean),
+    )];
+  }
+
+  private isDiscoveryOwner(agentId: string): boolean {
+    return this.discoveryOwnerIds().includes(agentId);
+  }
+
+  private isSettledDownstreamSubgoal(subgoal: SessionSubgoal | null | undefined): boolean {
+    if (!subgoal) {
+      return false;
+    }
+    return (
+      subgoal.decisionState === "resolved" &&
+      (subgoal.stage === "ready_for_build" || subgoal.stage === "building" || subgoal.stage === "ready_for_review" || subgoal.stage === "done")
+    );
+  }
+
+  private isExplicitReopenUpdate(update: SubgoalUpdate): boolean {
+    const requestedStage = update.stage ? normalizeSubgoalStage(update.stage, "researching") : null;
+    return Boolean(
+      (requestedStage && (requestedStage === "researching" || requestedStage === "blocked")) ||
+      update.decisionState === "disputed" ||
+      compactWhitespace(update.reopenReason || "")
+    );
+  }
+
+  private subgoalByExactTopicKey(topicKey: string | null | undefined, stages?: SubgoalStage[]): SessionSubgoal | null {
+    const normalized = normalizeTopicKey(topicKey);
+    if (!normalized) {
+      return null;
+    }
+    return this.activeSubgoals().find((subgoal) => {
+      if (subgoal.topicKey !== normalized) {
+        return false;
+      }
+      if (Array.isArray(stages) && stages.length > 0 && !stages.includes(subgoal.stage)) {
+        return false;
+      }
+      return true;
+    }) ?? null;
+  }
+
+  private referencedSubgoalIds(
+    changedSubgoalIds: string[],
+    updates: SubgoalUpdate[] | undefined,
+    inFlightSubgoalRefs: TrackedSubgoalRef[] | null,
+  ): string[] {
+    const ids = new Set<string>(changedSubgoalIds);
+    for (const update of Array.isArray(updates) ? updates : []) {
+      if (update?.id) {
+        const canonical = this.canonicalSubgoalForId(update.id);
+        if (canonical?.id) {
+          ids.add(canonical.id);
+        }
+      } else if (update?.topicKey) {
+        const exact = this.subgoalByExactTopicKey(update.topicKey);
+        if (exact?.id) {
+          ids.add(exact.id);
+        }
+      }
+    }
+    for (const ref of Array.isArray(inFlightSubgoalRefs) ? inFlightSubgoalRefs : []) {
+      const canonical = this.canonicalSubgoalForId(ref.id);
+      if (canonical?.id) {
+        ids.add(canonical.id);
+      }
+    }
+    return [...ids];
+  }
+
+  private coordinationRoutingSignature(subgoalIds: string[], targetAgentIds: string[]): string | null {
+    const normalizedSubgoalIds = [...new Set(subgoalIds.map((value) => String(value ?? "").trim()).filter(Boolean))].sort();
+    const normalizedTargets = [...new Set(targetAgentIds.map((value) => String(value ?? "").trim()).filter(Boolean))].sort();
+    if (normalizedSubgoalIds.length === 0 || normalizedTargets.length === 0) {
+      return null;
+    }
+    const subgoalParts = normalizedSubgoalIds.map((id) => {
+      const subgoal = this.canonicalSubgoalForId(id);
+      if (!subgoal) {
+        return `${id}:missing`;
+      }
+      return [
+        subgoal.id,
+        subgoal.stage,
+        subgoal.decisionState,
+        subgoal.assigneeAgentId || "-",
+        compactWhitespace(subgoal.nextAction || "") || "-",
+      ].join(":");
+    });
+    return `targets=${normalizedTargets.join(",")}|subgoals=${subgoalParts.join("|")}`;
+  }
+
+  private shouldSuppressDuplicateCoordinationTurn(agent: RuntimeAgent, subgoalIds: string[], targetAgentIds: string[]): boolean {
+    if (!this.canCanonicalizeSubgoal(agent.preset.id)) {
+      return false;
+    }
+    const signature = this.coordinationRoutingSignature(subgoalIds, targetAgentIds);
+    if (!signature) {
+      return false;
+    }
+    for (let index = this.recentEvents.length - 1; index >= 0; index -= 1) {
+      const event = this.recentEvents[index];
+      if (event.sender !== agent.preset.name || event.channel !== agent.preset.publishChannel) {
+        continue;
+      }
+      const previousSignature = String(event.metadata?.routingSignature ?? "").trim();
+      if (!previousSignature) {
+        return false;
+      }
+      return previousSignature === signature;
+    }
+    return false;
+  }
+
   private canCanonicalizeSubgoal(agentId: string): boolean {
     return this.coordinationOwnerIds().includes(agentId);
   }
@@ -1600,8 +1824,13 @@ export class LiveSession {
     let blockedBuildPromotion = false;
     const conflicts: StaleSubgoalConflict[] = [];
     for (const update of normalized.slice(0, 8)) {
+      const exactTopicMatch = !update.id && update.topicKey
+        ? this.subgoalByExactTopicKey(update.topicKey)
+        : null;
       const existingMatch = update.id
         ? this.canonicalSubgoalForId(update.id)
+        : exactTopicMatch
+          ? this.canonicalSubgoalForId(exactTopicMatch.id)
         : null;
       const redirectedFromMerged = Boolean(update.id && existingMatch && existingMatch.id !== update.id);
       const existingIndex = existingMatch ? this.subgoals.findIndex((subgoal) => subgoal.id === existingMatch.id) : -1;
@@ -1611,8 +1840,27 @@ export class LiveSession {
         if (this.isArchivedSubgoal(existing)) {
           continue;
         }
-        const canMutateState = !redirectedFromMerged && this.canMutateSubgoal(agentId, existing);
+        if (!update.id && existing.stage === "done") {
+          continue;
+        }
+        let canMutateState = !redirectedFromMerged && this.canMutateSubgoal(agentId, existing);
+        if (
+          !canMutateState &&
+          update.id &&
+          this.isExplicitReopenUpdate(update) &&
+          (this.isDiscoveryOwner(agentId) || this.canCanonicalizeSubgoal(agentId))
+        ) {
+          canMutateState = true;
+        }
         const wantsStateMutation = this.hasStateMutation(update, existing);
+        if (
+          this.isDiscoveryOwner(agentId) &&
+          !update.id &&
+          this.isSettledDownstreamSubgoal(existing) &&
+          !this.isExplicitReopenUpdate(update)
+        ) {
+          continue;
+        }
         let requestedStage = canMutateState && update.stage ? normalizeSubgoalStage(update.stage, existing.stage) : existing.stage;
         let decisionState = canMutateState ? this.inferNextDecisionState(existing, update, requestedStage) : existing.decisionState;
         let buildGateMessage: string | null = null;

@@ -151,6 +151,7 @@ export interface AgentTurnResult {
     sawFileChange: boolean;
     sawPolicyWriteBlock: boolean;
     sawBroadDataLoad: boolean;
+    sawBroadOutputDump: boolean;
   };
   completion: "continue" | "done" | "blocked";
   rawText: string;
