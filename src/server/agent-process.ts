@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { appendFileSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { AgentPreset, AgentSnapshot, AgentTurnResult, AppConfig, TokenUsage } from "../shared/types";
+import { AgentPreset, AgentSnapshot, AgentTurnResult, AppConfig, DirectedTeamMessage, TokenUsage } from "../shared/types";
 import { AgentFiles, appendAgentHistory } from "./storage";
 import { ensureParent, normalizePath, nowIso, tailText } from "./utils";
 import { effectiveCodexHomeDir } from "./codex-home";
@@ -105,7 +105,7 @@ function routingGuidanceLines(agent: AgentPreset, allAgents: AgentPreset[]): str
   const agentIds = allAgents.map((entry) => entry.id).join(", ");
   const lines = [
     `- Available agent ids for targeted team messages: ${agentIds}.`,
-    "- You may optionally set targetAgentId for one recipient or targetAgentIds for multiple recipients. Use null or [] to broadcast normally.",
+    "- Inside each teamMessages entry, you may optionally set targetAgentId for one recipient or targetAgentIds for multiple recipients. Leave them empty to broadcast normally.",
     "- Use targeted messages only when one or more specific agents need to act. Otherwise broadcast to the team channel you publish on.",
   ];
   const allowedTargets = Array.isArray(agent.policy?.allowedTargetAgentIds)
@@ -250,24 +250,26 @@ export class CodexAgentProcess {
       "- Give each subgoal a stable topicKey in kebab-case, such as timing-contract, data-quality, or ranking-policy. Reuse the same topicKey when new evidence belongs to the same topic.",
       "- If new evidence belongs to a materially different research axis, acceptance contract, deliverable, or downstream owner, create a new subgoal instead of overloading an existing one.",
       "- If an active card with the same topicKey already exists, update that card by id instead of creating a fresh no-id card.",
-      "- subgoalUpdates are optional. If you are only sharing an opinion, objection, or extra evidence, teamMessage alone is fine.",
+      "- subgoalUpdates are optional. If you are only sharing an opinion, objection, or extra evidence, teamMessages alone are fine.",
       "- Use subgoalUpdates when you create a card, change stage/assignee/decisionState/acceptance/nextAction, or add durable facts that should stay on the board.",
       "- Keep subgoalUpdates.summary short, and store durable details in addFacts/addOpenQuestions/addResolvedDecisions/addAcceptanceCriteria/addRelevantFiles/nextAction.",
       "- If you are not the current assignee or a coordination owner for an existing subgoal, prefer append-only updates instead of changing stage, decisionState, or assignee.",
       "- Only coordination owners should canonicalize duplicates by setting mergedIntoSubgoalId on the source subgoal. Do not rewrite or delete history in free text.",
       "- Use decisionState deliberately: open while exploring, disputed when contradictions remain, resolved only when the core contract is settled enough for downstream routing.",
       "- If you reopen a subgoal because implementation or review changed the assumptions, include reopenReason and set decisionState to disputed.",
-      "- For cards already in ready_for_build, building, ready_for_review, or done, do not send a no-id subgoalUpdate just to reconfirm the same conclusion. Use teamMessage for commentary, or update the existing card by id only if you are explicitly reopening it.",
+      "- For cards already in ready_for_build, building, ready_for_review, or done, do not send a no-id subgoalUpdate just to reconfirm the same conclusion. Use teamMessages for commentary, or update the existing card by id only if you are explicitly reopening it.",
       "- When you update an existing subgoal by id, include expectedRevision from the current Goal board or Actionable subgoals view.",
-      "- Keep teamMessage to one short delta or handoff. Do not paste long transcripts, audits, or code excerpts.",
+      "- Keep each teamMessages entry to one short delta or handoff. Do not paste long transcripts, audits, or code excerpts.",
+      "- Use multiple teamMessages only when different recipients need different actions or when different subgoals need separate handoffs. If the same message should reach everyone, send one broadcast entry instead.",
+      "- Do not bundle unrelated subgoals into one teamMessages entry. Split them so each message carries one concrete handoff or one concrete research follow-up.",
       "- Reply only when you add materially new evidence, a contradiction, or a decision-changing action. Otherwise prefer shouldReply=false and keep completion=\"continue\".",
-      "- Use targetAgentId or targetAgentIds only when a specific next actor or subset needs to act; otherwise broadcast.",
+      "- Set targetAgentId or targetAgentIds inside each teamMessages entry only when a specific next actor or subset needs to act; otherwise leave them empty to broadcast.",
       "- Use completion=\"done\" only when your branch is genuinely exhausted until a new goal, operator instruction, implementation change, or targeted request arrives.",
       "- Use subgoal stages consistently: open/researching for discovery, ready_for_build for routing-ready research, building for active implementation, ready_for_review for audit, done for accepted work, blocked for real blockers.",
       "- Implementation and review can reopen research. If downstream evidence changes assumptions, acceptance, eval contracts, or operator workflow, move the affected subgoal back to researching instead of trapping it in a build/review loop.",
       "Return exactly this shape between the XML tags:",
       "<codex_research_team-response>",
-      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessage":"one concise message for the team","targetAgentId":null,"targetAgentIds":[],"subgoalUpdates":[{"title":"timing contract","topicKey":"timing-contract","summary":"Define the canonical timing contract before implementation.","addFacts":["Current timing source differs between export paths."],"addOpenQuestions":["Which timestamp source is canonical?"],"addRelevantFiles":["src/timing.ts"],"nextAction":"researchers should settle the canonical timing source","stage":"researching","decisionState":"open","assigneeAgentId":null,"mergedIntoSubgoalId":null}],"completion":"continue"}',
+      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessages":[{"content":"one concise message for the team","targetAgentId":null,"targetAgentIds":[]}],"subgoalUpdates":[{"title":"timing contract","topicKey":"timing-contract","summary":"Define the canonical timing contract before implementation.","addFacts":["Current timing source differs between export paths."],"addOpenQuestions":["Which timestamp source is canonical?"],"addRelevantFiles":["src/timing.ts"],"nextAction":"researchers should settle the canonical timing source","stage":"researching","decisionState":"open","assigneeAgentId":null,"mergedIntoSubgoalId":null}],"completion":"continue"}',
       "</codex_research_team-response>",
       `Finish with this token on its own line: ${token}`,
     ].join("\n\n");
@@ -655,7 +657,53 @@ export class CodexAgentProcess {
   }
 }
 
-function normalizeParsedTurnResult(parsed: Partial<AgentTurnResult> & { teamMessage?: string }, rawText: string): AgentTurnResult {
+function normalizeDirectedTeamMessages(parsed: Partial<AgentTurnResult> & { teamMessage?: string; targetAgentId?: string | null; targetAgentIds?: string[] | null }): DirectedTeamMessage[] {
+  const normalizeTargetIds = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? [...new Set(value.map((item) => String(item ?? "").trim()).filter(Boolean))]
+      : [];
+  const fromArray = Array.isArray(parsed.teamMessages)
+    ? parsed.teamMessages
+      .filter((item) => item && typeof item === "object")
+      .map((item) => {
+        const record = item as Record<string, unknown>;
+        const parsedTargetAgentIds = normalizeTargetIds(record.targetAgentIds);
+        const singleTargetAgentId = String(record.targetAgentId ?? "").trim() || null;
+        const targetAgentIds = parsedTargetAgentIds.length > 0
+          ? parsedTargetAgentIds
+          : singleTargetAgentId
+            ? [singleTargetAgentId]
+            : [];
+        return {
+          content: String(record.content ?? "").trim(),
+          targetAgentId: targetAgentIds.length === 1 ? targetAgentIds[0] : null,
+          targetAgentIds,
+        };
+      })
+      .filter((item) => item.content)
+    : [];
+  if (fromArray.length > 0) {
+    return fromArray;
+  }
+  const legacyContent = String(parsed.teamMessage ?? "").trim();
+  if (!legacyContent) {
+    return [];
+  }
+  const parsedTargetAgentIds = normalizeTargetIds(parsed.targetAgentIds);
+  const singleTargetAgentId = String(parsed.targetAgentId ?? "").trim() || null;
+  const targetAgentIds = parsedTargetAgentIds.length > 0
+    ? parsedTargetAgentIds
+    : singleTargetAgentId
+      ? [singleTargetAgentId]
+      : [];
+  return [{
+    content: legacyContent,
+    targetAgentId: targetAgentIds.length === 1 ? targetAgentIds[0] : null,
+    targetAgentIds,
+  }];
+}
+
+function normalizeParsedTurnResult(parsed: Partial<AgentTurnResult> & { teamMessage?: string; targetAgentId?: string | null; targetAgentIds?: string[] | null }, rawText: string): AgentTurnResult {
   const normalizeStringArray = (value: unknown): string[] =>
     Array.isArray(value)
       ? value.map((item) => String(item ?? "").trim()).filter(Boolean)
@@ -664,15 +712,7 @@ function normalizeParsedTurnResult(parsed: Partial<AgentTurnResult> & { teamMess
     ? parsed.workingNotes.map((item) => String(item).trim()).filter(Boolean)
     : [];
   const completion = parsed.completion === "done" || parsed.completion === "blocked" ? parsed.completion : "continue";
-  const parsedTargetAgentIds = Array.isArray(parsed.targetAgentIds)
-    ? parsed.targetAgentIds.map((item) => String(item ?? "").trim()).filter(Boolean)
-    : [];
-  const singleTargetAgentId = String(parsed.targetAgentId ?? "").trim() || null;
-  const targetAgentIds = parsedTargetAgentIds.length > 0
-    ? [...new Set(parsedTargetAgentIds)]
-    : singleTargetAgentId
-      ? [singleTargetAgentId]
-      : [];
+  const teamMessages = normalizeDirectedTeamMessages(parsed);
   const subgoalUpdates = Array.isArray(parsed.subgoalUpdates)
     ? parsed.subgoalUpdates
         .filter((item) => item && typeof item === "object")
@@ -706,11 +746,9 @@ function normalizeParsedTurnResult(parsed: Partial<AgentTurnResult> & { teamMess
         }))
     : [];
   return {
-    shouldReply: Boolean(parsed.shouldReply) && Boolean(parsed.teamMessage),
+    shouldReply: Boolean(parsed.shouldReply) && teamMessages.length > 0,
     workingNotes: notes.length > 0 ? notes : ["No public working notes were provided."],
-    teamMessage: String(parsed.teamMessage ?? "").trim(),
-    targetAgentId: targetAgentIds.length === 1 ? targetAgentIds[0] : null,
-    targetAgentIds,
+    teamMessages,
     subgoalUpdates,
     completion,
     rawText,
@@ -735,9 +773,7 @@ export function parseAgentTurnResult(rawText: string): AgentTurnResult {
     return {
       shouldReply: false,
       workingNotes: ["Structured response was missing."],
-      teamMessage: "",
-      targetAgentId: null,
-      targetAgentIds: [],
+      teamMessages: [],
       subgoalUpdates: [],
       completion: "continue",
       rawText,
@@ -745,12 +781,12 @@ export function parseAgentTurnResult(rawText: string): AgentTurnResult {
   }
 
   try {
-    const parsed = JSON.parse(payloadText) as Partial<AgentTurnResult> & { teamMessage?: string };
+    const parsed = JSON.parse(payloadText) as Partial<AgentTurnResult> & { teamMessage?: string; targetAgentId?: string | null; targetAgentIds?: string[] | null };
     return normalizeParsedTurnResult(parsed, rawText);
   } catch (error) {
     try {
       const repairedPayload = repairMalformedResponseJson(payloadText);
-      const parsed = JSON.parse(repairedPayload) as Partial<AgentTurnResult> & { teamMessage?: string };
+      const parsed = JSON.parse(repairedPayload) as Partial<AgentTurnResult> & { teamMessage?: string; targetAgentId?: string | null; targetAgentIds?: string[] | null };
       const normalized = normalizeParsedTurnResult(parsed, rawText);
       normalized.workingNotes = [
         ...normalized.workingNotes,
@@ -763,9 +799,7 @@ export function parseAgentTurnResult(rawText: string): AgentTurnResult {
     return {
       shouldReply: false,
       workingNotes: [`Response JSON parse failed: ${(error as Error).message}`],
-      teamMessage: "",
-      targetAgentId: null,
-      targetAgentIds: [],
+      teamMessages: [],
       subgoalUpdates: [],
       completion: "continue",
       rawText,

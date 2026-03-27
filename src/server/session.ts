@@ -5,6 +5,7 @@ import {
   AgentSnapshot,
   AgentTurnResult,
   AppConfig,
+  DirectedTeamMessage,
   SessionChannel,
   SessionEvent,
   SessionSubgoal,
@@ -178,6 +179,32 @@ function extractTargetAgentIds(metadata: Record<string, unknown> | undefined): s
   }
   const single = typeof metadata?.targetAgentId === "string" ? metadata.targetAgentId.trim() : "";
   return single ? [single] : [];
+}
+
+function normalizeDirectedMessageTargets(message: DirectedTeamMessage | null | undefined): string[] {
+  const multi = Array.isArray(message?.targetAgentIds)
+    ? message.targetAgentIds.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : [];
+  if (multi.length > 0) {
+    return [...new Set(multi)];
+  }
+  const single = typeof message?.targetAgentId === "string" ? message.targetAgentId.trim() : "";
+  return single ? [single] : [];
+}
+
+function summarizeDirectedMessages(messages: DirectedTeamMessage[] | null | undefined, maxChars = 220): string {
+  const items = (Array.isArray(messages) ? messages : [])
+    .map((message) => {
+      const content = compactWhitespace(message?.content || "");
+      if (!content) {
+        return "";
+      }
+      const targetIds = normalizeDirectedMessageTargets(message);
+      const targetText = targetIds.length > 0 ? ` target=${targetIds.join(",")}` : "";
+      return `${targetText}: ${shortenText(content, maxChars)}`.trim();
+    })
+    .filter(Boolean);
+  return items.join(" | ");
 }
 
 function formatTargetSuffix(metadata: Record<string, unknown> | undefined): string {
@@ -586,6 +613,11 @@ export class LiveSession {
             waitingForInput: false,
             lastError: "",
             completion: restored.completion === "blocked" ? "continue" : restored.completion ?? "continue",
+            teamMessages: Array.isArray((restored as Partial<AgentSnapshot>).teamMessages)
+              ? (restored as Partial<AgentSnapshot>).teamMessages
+              : compactWhitespace((restored as Partial<AgentSnapshot> & { teamMessage?: string }).teamMessage || "")
+                ? [{ content: compactWhitespace((restored as Partial<AgentSnapshot> & { teamMessage?: string }).teamMessage || "") }]
+                : [],
             lastUsage: restored.lastUsage ?? emptyTokenUsage(),
             totalUsage: restored.totalUsage ?? emptyTokenUsage(),
           }
@@ -607,7 +639,7 @@ export class LiveSession {
             lastResponseAt: null,
             completion: "continue",
             workingNotes: [],
-            teamMessage: "",
+            teamMessages: [],
             stdoutTail: "",
             stderrTail: "",
             lastUsage: emptyTokenUsage(),
@@ -933,7 +965,7 @@ export class LiveSession {
         agent.snapshot.workingNotes = [
           `Transient Codex turn failure, retrying ${agent.retryCount}/${TRANSIENT_TURN_RETRY_LIMIT}: ${shortenText(message, 240)}`,
         ];
-        agent.snapshot.teamMessage = "";
+        agent.snapshot.teamMessages = [];
         this.appendAgentHistory(agent, "notes", agent.snapshot.workingNotes[0], `Retry ${agent.retryCount}`);
         this.persistAgent(agentId);
         this.emit({ type: "agent", sessionId: this.id, agent: { ...agent.snapshot } });
@@ -943,7 +975,7 @@ export class LiveSession {
       this.applyTurnResult(agentId, {
         shouldReply: false,
         workingNotes: [`Codex turn failed: ${(error as Error).message}`],
-        teamMessage: "",
+        teamMessages: [],
         completion: "blocked",
         rawText: "",
       }, maxDigestSequence(digest), agent.inFlightSubgoalRefs);
@@ -981,7 +1013,11 @@ export class LiveSession {
     }
     const obsoleteConflicts = this.buildObsoleteTurnConflicts(agentId, inFlightSubgoalRefs);
     const hasRequestedStateMutation = Array.isArray(normalizedResult.subgoalUpdates) && normalizedResult.subgoalUpdates.length > 0;
-    const hasMeaningfulTurnOutput = hasRequestedStateMutation || Boolean(normalizedResult.teamMessage) || normalizedResult.completion === "done" || normalizedResult.completion === "blocked";
+    const hasMeaningfulTurnOutput =
+      hasRequestedStateMutation ||
+      ((Array.isArray(normalizedResult.teamMessages) ? normalizedResult.teamMessages : []).length > 0) ||
+      normalizedResult.completion === "done" ||
+      normalizedResult.completion === "blocked";
     const shouldSuppressObsoleteTurn = obsoleteConflicts.length > 0 && hasMeaningfulTurnOutput;
     const requestedStages = new Set(
       (Array.isArray(normalizedResult.subgoalUpdates) ? normalizedResult.subgoalUpdates : [])
@@ -994,46 +1030,30 @@ export class LiveSession {
       ? { changedIds: this.recordSubgoalConflicts(obsoleteConflicts), blockedBuildPromotion: false, conflicts: [] as StaleSubgoalConflict[] }
       : this.applySubgoalUpdates(agentId, normalizedResult.subgoalUpdates);
     const changedSubgoalIds = [...new Set([...subgoalResult.changedIds, ...obsoleteConflicts.map((conflict) => conflict.subgoalId)])];
+    const conflictOnlyIds = new Set([
+      ...subgoalResult.conflicts.map((conflict) => conflict.subgoalId),
+      ...obsoleteConflicts.map((conflict) => conflict.subgoalId),
+    ]);
+    const actualStateChangeIds = subgoalResult.changedIds.filter((id) => !conflictOnlyIds.has(id));
     const referencedSubgoalIds = this.referencedSubgoalIds(changedSubgoalIds, normalizedResult.subgoalUpdates, inFlightSubgoalRefs);
     if (!shouldSuppressObsoleteTurn) {
       agent.snapshot.lastSeenSubgoalRevision = this.subgoalRevision;
     }
-    agent.snapshot.completion = shouldSuppressObsoleteTurn && normalizedResult.completion !== "blocked" ? "continue" : normalizedResult.completion;
-    agent.snapshot.workingNotes = normalizedResult.workingNotes;
-    agent.snapshot.teamMessage = normalizedResult.teamMessage;
-    agent.snapshot.lastResponseAt = nowIso();
-    agent.snapshot.status = shouldSuppressObsoleteTurn ? "idle" : (normalizedResult.completion === "blocked" ? "error" : "idle");
-
-    if (normalizedResult.workingNotes.length > 0) {
-      this.appendAgentHistory(agent, "notes", normalizedResult.workingNotes.join("\n"), `Turn ${agent.snapshot.turnCount}`);
-    }
-    if (normalizedResult.teamMessage) {
-      this.appendAgentHistory(agent, "messages", normalizedResult.teamMessage, `Turn ${agent.snapshot.turnCount}`);
-    }
-
-    this.persistAgent(agentId);
-    this.emit({ type: "agent", sessionId: this.id, agent: { ...agent.snapshot } });
-
-    const requestedTargetIds = Array.isArray(normalizedResult.targetAgentIds) && normalizedResult.targetAgentIds.length > 0
-      ? normalizedResult.targetAgentIds
-      : normalizedResult.targetAgentId
-        ? [normalizedResult.targetAgentId]
-        : [];
-    const normalizedTargetAgentIds = [...new Set(
-      requestedTargetIds
-        .map((value) => String(value ?? "").trim())
-        .filter((value) => value && value !== agentId && this.agents.has(value)),
-    )];
+    const rawTeamMessages = Array.isArray(normalizedResult.teamMessages)
+      ? normalizedResult.teamMessages
+          .filter((message) => message && typeof message === "object")
+          .map((message) => ({
+            content: compactWhitespace(message.content || ""),
+            targetAgentId: String(message.targetAgentId ?? "").trim() || null,
+            targetAgentIds: normalizeDirectedMessageTargets(message),
+          }))
+          .filter((message) => message.content)
+      : [];
     const allowedTargetSet = new Set(
       (Array.isArray(agent.preset.policy.allowedTargetAgentIds) ? agent.preset.policy.allowedTargetAgentIds : [])
         .map((value) => String(value ?? "").trim())
         .filter(Boolean),
     );
-    const restrictedTargetAgentIds = allowedTargetSet.size > 0
-      ? normalizedTargetAgentIds.filter((value) => allowedTargetSet.has(value))
-      : normalizedTargetAgentIds;
-    const peerDeferredTargetAgentIds = this.applyPeerContextTargetDeferral(agent, restrictedTargetAgentIds);
-    let effectiveTargetAgentIds = this.shouldForceBroadcastOnFirstTurn(agent) ? [] : peerDeferredTargetAgentIds;
     const allowedTargets = new Set(
       (Array.isArray(agent.preset.policy.allowedTargetAgentIds) ? agent.preset.policy.allowedTargetAgentIds : [])
         .map((value) => String(value ?? "").trim())
@@ -1055,26 +1075,46 @@ export class LiveSession {
       requestedStages.has("ready_for_review") &&
       !requestedStages.has("blocked") &&
       !requestedStages.has("researching");
-    if (isAuditHandoff && reviewerId && allowedTargets.has(reviewerId)) {
-      if (effectiveTargetAgentIds.length === 0 || effectiveTargetAgentIds.every((value) => routingOwnerIds.includes(value))) {
-        effectiveTargetAgentIds = [reviewerId];
-      } else if (!effectiveTargetAgentIds.includes(reviewerId)) {
-        effectiveTargetAgentIds = [reviewerId, ...effectiveTargetAgentIds];
+    const materializeTeamMessage = (message: DirectedTeamMessage): DirectedTeamMessage => {
+      const normalizedTargetAgentIds = [...new Set(
+        normalizeDirectedMessageTargets(message)
+          .map((value) => String(value ?? "").trim())
+          .filter((value) => value && value !== agentId && this.agents.has(value)),
+      )];
+      const restrictedTargetAgentIds = allowedTargetSet.size > 0
+        ? normalizedTargetAgentIds.filter((value) => allowedTargetSet.has(value))
+        : normalizedTargetAgentIds;
+      const peerDeferredTargetAgentIds = this.applyPeerContextTargetDeferral(agent, restrictedTargetAgentIds);
+      let effectiveTargetAgentIds = this.shouldForceBroadcastOnFirstTurn(agent) ? [] : peerDeferredTargetAgentIds;
+      if (isAuditHandoff && reviewerId && allowedTargets.has(reviewerId)) {
+        if (effectiveTargetAgentIds.length === 0 || effectiveTargetAgentIds.every((value) => routingOwnerIds.includes(value))) {
+          effectiveTargetAgentIds = [reviewerId];
+        } else if (!effectiveTargetAgentIds.includes(reviewerId)) {
+          effectiveTargetAgentIds = [reviewerId, ...effectiveTargetAgentIds];
+        }
       }
-    }
-    if (subgoalResult.blockedBuildPromotion) {
-      effectiveTargetAgentIds = builderId ? effectiveTargetAgentIds.filter((value) => value !== builderId) : effectiveTargetAgentIds;
-    }
-    effectiveTargetAgentIds = effectiveTargetAgentIds.filter((value) => {
-      const target = this.agents.get(value);
-      if (!target) {
-        return false;
+      if (subgoalResult.blockedBuildPromotion) {
+        effectiveTargetAgentIds = builderId ? effectiveTargetAgentIds.filter((value) => value !== builderId) : effectiveTargetAgentIds;
       }
-      if (!this.requiresGoalBoardOwnership(target)) {
-        return true;
-      }
-      return this.goalBoardNeedsAttention(target);
-    });
+      effectiveTargetAgentIds = effectiveTargetAgentIds.filter((value) => {
+        const target = this.agents.get(value);
+        if (!target) {
+          return false;
+        }
+        if (!this.requiresGoalBoardOwnership(target)) {
+          return true;
+        }
+        return this.goalBoardNeedsAttention(target);
+      });
+      return {
+        content: message.content,
+        ...(effectiveTargetAgentIds.length === 1 ? { targetAgentId: effectiveTargetAgentIds[0] } : {}),
+        ...(effectiveTargetAgentIds.length > 0 ? { targetAgentIds: effectiveTargetAgentIds } : { targetAgentIds: [] }),
+      };
+    };
+    let effectiveTeamMessages = normalizedResult.shouldReply && !shouldSuppressObsoleteTurn
+      ? rawTeamMessages.map((message) => materializeTeamMessage(message))
+      : [];
     if (
       this.isDiscoveryOwner(agentId) &&
       !this.hasOperatorOverride(agent) &&
@@ -1083,42 +1123,78 @@ export class LiveSession {
       (!Array.isArray(normalizedResult.subgoalUpdates) || normalizedResult.subgoalUpdates.length === 0)
     ) {
       normalizedResult.shouldReply = false;
-      normalizedResult.teamMessage = "";
+      effectiveTeamMessages = [];
       normalizedResult.workingNotes = [];
     }
-    if (
-      normalizedResult.shouldReply &&
-      normalizedResult.teamMessage &&
-      this.shouldSuppressDuplicateCoordinationTurn(agent, referencedSubgoalIds, effectiveTargetAgentIds)
-    ) {
+    effectiveTeamMessages = effectiveTeamMessages.filter((message) =>
+      !this.shouldSuppressDuplicateCoordinationTurn(agent, referencedSubgoalIds, normalizeDirectedMessageTargets(message)) &&
+      !this.shouldSuppressRepeatedResearchNote(agent, referencedSubgoalIds, normalizeDirectedMessageTargets(message), actualStateChangeIds.length > 0)
+    );
+    if (normalizedResult.shouldReply && effectiveTeamMessages.length === 0) {
       normalizedResult.shouldReply = false;
-      normalizedResult.teamMessage = "";
-      normalizedResult.workingNotes = [];
     }
-    if (ownsReviewStageOnly && requestedStages.has("done") && effectiveTargetAgentIds.length === 0) {
+    if (ownsReviewStageOnly && requestedStages.has("done") && effectiveTeamMessages.every((message) => normalizeDirectedMessageTargets(message).length === 0)) {
       normalizedResult.shouldReply = false;
-      normalizedResult.teamMessage = "";
+      effectiveTeamMessages = [];
     }
 
-    const eventMetadata = {
+    const baseEventMetadata = {
       agentId,
       turnCount: agent.snapshot.turnCount,
       shouldReply: normalizedResult.shouldReply,
       completion: normalizedResult.completion,
       ...(referencedSubgoalIds.length > 0 ? { subgoalIds: referencedSubgoalIds } : {}),
-      ...(effectiveTargetAgentIds.length === 1 ? { targetAgentId: effectiveTargetAgentIds[0] } : {}),
-      ...(effectiveTargetAgentIds.length > 0 ? { targetAgentIds: effectiveTargetAgentIds } : {}),
-      ...(this.canCanonicalizeSubgoal(agentId) && referencedSubgoalIds.length > 0 && effectiveTargetAgentIds.length > 0
-        ? { routingSignature: this.coordinationRoutingSignature(referencedSubgoalIds, effectiveTargetAgentIds) }
-        : {}),
     };
+    agent.snapshot.completion = shouldSuppressObsoleteTurn && normalizedResult.completion !== "blocked" ? "continue" : normalizedResult.completion;
+    agent.snapshot.workingNotes = normalizedResult.workingNotes;
+    agent.snapshot.teamMessages = effectiveTeamMessages;
+    agent.snapshot.lastResponseAt = nowIso();
+    agent.snapshot.status = shouldSuppressObsoleteTurn ? "idle" : (normalizedResult.completion === "blocked" ? "error" : "idle");
 
     if (normalizedResult.workingNotes.length > 0) {
-      this.publish(agent.preset.name, "status", normalizedResult.workingNotes.join(" | "), eventMetadata);
+      this.appendAgentHistory(agent, "notes", normalizedResult.workingNotes.join("\n"), `Turn ${agent.snapshot.turnCount}`);
     }
-    if (normalizedResult.shouldReply && normalizedResult.teamMessage && !shouldSuppressObsoleteTurn) {
+    effectiveTeamMessages.forEach((message, index) => {
+      const targetIds = normalizeDirectedMessageTargets(message);
+      const prefix = targetIds.length > 0 ? `[target ${targetIds.join(", ")}] ` : "";
+      this.appendAgentHistory(agent, "messages", `${prefix}${message.content}`, `Turn ${agent.snapshot.turnCount}${effectiveTeamMessages.length > 1 ? ` #${index + 1}` : ""}`);
+    });
+
+    this.persistAgent(agentId);
+    this.emit({ type: "agent", sessionId: this.id, agent: { ...agent.snapshot } });
+
+    const statusSignature = this.statusEventSignature(agent, actualStateChangeIds, normalizedResult.completion, subgoalResult.blockedBuildPromotion);
+    const shouldPublishStatus =
+      normalizedResult.workingNotes.length > 0 &&
+      !shouldSuppressObsoleteTurn &&
+      (
+        normalizedResult.completion !== "continue" ||
+        actualStateChangeIds.length > 0 ||
+        subgoalResult.blockedBuildPromotion
+      ) &&
+      !this.shouldSuppressDuplicateStatusEvent(agent, statusSignature);
+    if (shouldPublishStatus) {
+      this.publish(agent.preset.name, "status", normalizedResult.workingNotes.join(" | "), {
+        ...baseEventMetadata,
+        ...(statusSignature ? { statusSignature } : {}),
+      });
+    }
+    if (normalizedResult.shouldReply && effectiveTeamMessages.length > 0 && !shouldSuppressObsoleteTurn) {
       this.status = "running";
-      this.publish(agent.preset.name, agent.preset.publishChannel, normalizedResult.teamMessage, eventMetadata);
+      for (const message of effectiveTeamMessages) {
+        const targetIds = normalizeDirectedMessageTargets(message);
+        const researchNoteSignature = this.researchNoteSignature(agent, referencedSubgoalIds, targetIds);
+        const eventMetadata = {
+          ...baseEventMetadata,
+          ...(targetIds.length === 1 ? { targetAgentId: targetIds[0] } : {}),
+          ...(targetIds.length > 0 ? { targetAgentIds: targetIds } : {}),
+          ...(researchNoteSignature ? { researchNoteSignature } : {}),
+          ...(this.canCanonicalizeSubgoal(agentId) && referencedSubgoalIds.length > 0 && targetIds.length > 0
+            ? { routingSignature: this.coordinationRoutingSignature(referencedSubgoalIds, targetIds) }
+            : {}),
+        };
+        this.publish(agent.preset.name, agent.preset.publishChannel, message.content, eventMetadata);
+      }
     }
     const allConflicts = [...subgoalResult.conflicts, ...obsoleteConflicts];
     if (allConflicts.length > 0) {
@@ -1148,6 +1224,10 @@ export class LiveSession {
         const hasObsoleteTurn = grouped.conflicts.some((conflict) => conflict.reason === "obsolete_turn");
         const onlyDoneSoftNotes = grouped.conflicts.every((conflict) => conflict.reason === "done_soft_note");
         const hasDoneReopenSuggestion = grouped.conflicts.some((conflict) => conflict.reason === "done_reopen_suggestion");
+        const conflictBurstSignature = this.conflictBurstSignature(grouped.conflicts, grouped.targets);
+        if (this.shouldSuppressConflictBurst(subgoalId, conflictBurstSignature)) {
+          continue;
+        }
         this.status = "running";
         this.publish(
           "system",
@@ -1156,8 +1236,8 @@ export class LiveSession {
             ? `Stale note on ${subgoalId}: ${shortenText(conflictSummary, 320)}`
             : hasDoneReopenSuggestion
               ? `Reopen suggestion on ${subgoalId}: ${shortenText(conflictSummary, 320)} Re-check whether the completed card should reopen.`
-              : shouldSuppressObsoleteTurn && hasObsoleteTurn && normalizedResult.teamMessage
-                ? `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Suppressed stale handoff: ${shortenText(normalizedResult.teamMessage, 220)} Re-read the latest goal board before changing this subgoal again.`
+              : shouldSuppressObsoleteTurn && hasObsoleteTurn && summarizeDirectedMessages(rawTeamMessages)
+                ? `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Suppressed stale handoff: ${shortenText(summarizeDirectedMessages(rawTeamMessages), 220)} Re-read the latest goal board before changing this subgoal again.`
                 : `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Re-read the latest goal board before changing this subgoal again.`,
           {
             operatorEvent: true,
@@ -1171,6 +1251,7 @@ export class LiveSession {
             currentRevision: latestConflict.currentRevision,
             requestedStage: latestConflict.requestedStage,
             currentStage: latestConflict.currentStage,
+            ...(conflictBurstSignature ? { conflictBurstSignature } : {}),
             ...(grouped.targets.length === 1 ? { targetAgentId: grouped.targets[0] } : {}),
             ...(grouped.targets.length > 0 ? { targetAgentIds: grouped.targets } : {}),
           },
@@ -1617,6 +1698,136 @@ export class LiveSession {
     return `targets=${normalizedTargets.join(",")}|subgoals=${subgoalParts.join("|")}`;
   }
 
+  private subgoalStateSignature(subgoalIds: string[]): string | null {
+    const normalizedSubgoalIds = [...new Set(subgoalIds.map((value) => String(value ?? "").trim()).filter(Boolean))].sort();
+    if (normalizedSubgoalIds.length === 0) {
+      return null;
+    }
+    const parts = normalizedSubgoalIds.map((id) => {
+      const subgoal = this.canonicalSubgoalForId(id);
+      if (!subgoal) {
+        return `${id}:missing`;
+      }
+      return [
+        subgoal.id,
+        subgoal.stage,
+        subgoal.decisionState,
+        subgoal.assigneeAgentId || "-",
+        compactWhitespace(subgoal.nextAction || "") || "-",
+      ].join(":");
+    });
+    return parts.join("|");
+  }
+
+  private statusEventSignature(agent: RuntimeAgent, changedSubgoalIds: string[], completion: AgentTurnResult["completion"], blockedBuildPromotion: boolean): string | null {
+    if (completion === "continue" && changedSubgoalIds.length === 0 && !blockedBuildPromotion) {
+      return null;
+    }
+    const stateSignature = this.subgoalStateSignature(changedSubgoalIds) || "-";
+    return `${agent.preset.id}|${completion}|blocked_build=${blockedBuildPromotion ? "1" : "0"}|subgoals=${stateSignature}`;
+  }
+
+  private shouldSuppressDuplicateStatusEvent(agent: RuntimeAgent, signature: string | null): boolean {
+    if (!signature) {
+      return false;
+    }
+    for (let index = this.recentEvents.length - 1; index >= 0; index -= 1) {
+      const event = this.recentEvents[index];
+      if (event.sender !== agent.preset.name || event.channel !== "status") {
+        continue;
+      }
+      const previousSignature = compactWhitespace(String(event.metadata?.statusSignature ?? ""));
+      if (!previousSignature) {
+        return false;
+      }
+      return previousSignature === signature;
+    }
+    return false;
+  }
+
+  private researchNoteSignature(agent: RuntimeAgent, subgoalIds: string[], targetAgentIds: string[]): string | null {
+    if (!this.isDiscoveryOwner(agent.preset.id)) {
+      return null;
+    }
+    const stateSignature = this.subgoalStateSignature(subgoalIds);
+    if (!stateSignature) {
+      return null;
+    }
+    const normalizedTargets = [...new Set(targetAgentIds.map((value) => String(value ?? "").trim()).filter(Boolean))].sort();
+    return `${agent.preset.id}|targets=${normalizedTargets.join(",") || "-"}|subgoals=${stateSignature}`;
+  }
+
+  private shouldSuppressRepeatedResearchNote(agent: RuntimeAgent, subgoalIds: string[], targetAgentIds: string[], hasActualStateChange: boolean): boolean {
+    if (hasActualStateChange || !this.isDiscoveryOwner(agent.preset.id)) {
+      return false;
+    }
+    const signature = this.researchNoteSignature(agent, subgoalIds, targetAgentIds);
+    if (!signature) {
+      return false;
+    }
+    for (let index = this.recentEvents.length - 1; index >= 0; index -= 1) {
+      const event = this.recentEvents[index];
+      if (event.sender !== agent.preset.name || event.channel !== agent.preset.publishChannel) {
+        continue;
+      }
+      const previousSignature = compactWhitespace(String(event.metadata?.researchNoteSignature ?? ""));
+      if (!previousSignature) {
+        return false;
+      }
+      return previousSignature === signature;
+    }
+    return false;
+  }
+
+  private conflictBurstSignature(conflicts: StaleSubgoalConflict[], targetAgentIds: string[]): string | null {
+    if (conflicts.length === 0) {
+      return null;
+    }
+    const normalizedTargets = [...new Set(targetAgentIds.map((value) => String(value ?? "").trim()).filter(Boolean))].sort();
+    const latest = conflicts[conflicts.length - 1];
+    const reasonFamily = [...new Set(conflicts.map((conflict) => {
+      if (conflict.reason === "done_soft_note") {
+        return "done_soft_note";
+      }
+      if (conflict.reason === "done_reopen_suggestion") {
+        return "done_reopen_suggestion";
+      }
+      return "active_conflict";
+    }))].sort();
+    return [
+      latest.subgoalId,
+      reasonFamily.join(","),
+      latest.agentId,
+      latest.currentStage,
+      latest.currentAssigneeAgentId || "-",
+      normalizedTargets.join(",") || "-",
+    ].join("|");
+  }
+
+  private shouldSuppressConflictBurst(subgoalId: string, signature: string | null): boolean {
+    if (!signature) {
+      return false;
+    }
+    for (let index = this.recentEvents.length - 1; index >= 0; index -= 1) {
+      const event = this.recentEvents[index];
+      if (event.sender !== "system" || event.channel !== this.operatorChannel()) {
+        continue;
+      }
+      const eventSubgoalIds = Array.isArray(event.metadata?.subgoalIds)
+        ? event.metadata.subgoalIds.map((value) => String(value ?? "").trim()).filter(Boolean)
+        : [];
+      if (!eventSubgoalIds.includes(subgoalId)) {
+        continue;
+      }
+      const previousSignature = compactWhitespace(String(event.metadata?.conflictBurstSignature ?? ""));
+      if (!previousSignature) {
+        return false;
+      }
+      return previousSignature === signature;
+    }
+    return false;
+  }
+
   private shouldSuppressDuplicateCoordinationTurn(agent: RuntimeAgent, subgoalIds: string[], targetAgentIds: string[]): boolean {
     if (!this.canCanonicalizeSubgoal(agent.preset.id)) {
       return false;
@@ -1780,7 +1991,7 @@ export class LiveSession {
     if (!diagnostics?.sawPolicyWriteBlock || diagnostics.sawFileChange) {
       return false;
     }
-    if (this.isPolicyWriteProbeText(result.teamMessage)) {
+    if ((Array.isArray(result.teamMessages) ? result.teamMessages : []).some((message) => this.isPolicyWriteProbeText(message?.content))) {
       return true;
     }
     if ((result.workingNotes || []).some((note) => this.isPolicyWriteProbeText(note))) {
@@ -1806,7 +2017,7 @@ export class LiveSession {
         ...sanitizedNotes,
         "Ignored a policy-blocked shell write probe as a blocker signal. Keep routing unchanged unless a normal workspace-local edit path actually fails.",
       ],
-      teamMessage: "",
+      teamMessages: [],
       subgoalUpdates: sanitizedUpdates,
       completion: "continue",
     };
@@ -1836,7 +2047,7 @@ export class LiveSession {
     return {
       ...result,
       shouldReply: false,
-      teamMessage: "",
+      teamMessages: [],
       workingNotes: [
         ...(Array.isArray(result.workingNotes) ? result.workingNotes : []),
         "Suppressed a turn that relied on a broad dataset or pipeline load without changing the goal board. Reuse existing aggregates or narrow the probe next time.",

@@ -2102,6 +2102,17 @@ function renderAgentSummary(agent: AnyObject): string {
 }
 
 function renderAgentDetailCard(agent: AnyObject): string {
+  const renderedTeamMessages = Array.isArray(agent.teamMessages) && agent.teamMessages.length > 0
+    ? agent.teamMessages.map((message: AnyObject) => {
+        const targetIds = Array.isArray(message?.targetAgentIds)
+          ? message.targetAgentIds.map((value: unknown) => String(value ?? "").trim()).filter(Boolean)
+          : message?.targetAgentId
+            ? [String(message.targetAgentId)]
+            : [];
+        const prefix = targetIds.length > 0 ? `[target ${targetIds.join(", ")}]\n` : "";
+        return `${prefix}${String(message?.content ?? "").trim()}`;
+      }).join("\n\n")
+    : "-";
   return `
     <article class="panel agent-detail-card ${agent.waitingForInput ? "waiting" : ""} ${agent.status === "error" ? "error" : ""}">
       <div class="section-head tight">
@@ -2120,7 +2131,7 @@ function renderAgentDetailCard(agent: AnyObject): string {
       </div>
       <div class="detail-grid">
         <section><h5>Working Notes</h5><pre>${escapeHtml((agent.workingNotes || []).join("\n") || "-")}</pre></section>
-        <section><h5>Team Message</h5><pre>${escapeHtml(agent.teamMessage || "-")}</pre></section>
+        <section><h5>Team Messages</h5><pre>${escapeHtml(renderedTeamMessages)}</pre></section>
         <section><h5>Last Prompt</h5><pre>${escapeHtml(agent.lastPrompt || "-")}</pre></section>
         <section><h5>Last Error</h5><pre>${escapeHtml(agent.lastError || "-")}</pre></section>
         <section><h5>Stdout</h5><pre>${escapeHtml(agent.stdoutTail || "-")}</pre></section>

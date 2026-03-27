@@ -140,12 +140,16 @@ export interface AgentHistoryEntry {
   metadata?: Record<string, unknown>;
 }
 
+export interface DirectedTeamMessage {
+  content: string;
+  targetAgentId?: string | null;
+  targetAgentIds?: string[] | null;
+}
+
 export interface AgentTurnResult {
   shouldReply: boolean;
   workingNotes: string[];
-  teamMessage: string;
-  targetAgentId?: string | null;
-  targetAgentIds?: string[] | null;
+  teamMessages: DirectedTeamMessage[];
   subgoalUpdates?: SubgoalUpdate[];
   runtimeDiagnostics?: {
     sawFileChange: boolean;
@@ -175,7 +179,7 @@ export interface AgentSnapshot {
   lastResponseAt: string | null;
   completion: "continue" | "done" | "blocked";
   workingNotes: string[];
-  teamMessage: string;
+  teamMessages: DirectedTeamMessage[];
   stdoutTail: string;
   stderrTail: string;
   lastUsage: TokenUsage;
