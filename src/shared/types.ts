@@ -144,6 +144,7 @@ export interface DirectedTeamMessage {
   content: string;
   targetAgentId?: string | null;
   targetAgentIds?: string[] | null;
+  subgoalIds?: string[] | null;
 }
 
 export interface AgentTurnResult {

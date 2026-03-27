@@ -262,6 +262,7 @@ export class CodexAgentProcess {
       "- Keep each teamMessages entry to one short delta or handoff. Do not paste long transcripts, audits, or code excerpts.",
       "- Use multiple teamMessages only when different recipients need different actions or when different subgoals need separate handoffs. If the same message should reach everyone, send one broadcast entry instead.",
       "- Do not bundle unrelated subgoals into one teamMessages entry. Split them so each message carries one concrete handoff or one concrete research follow-up.",
+      "- Set subgoalIds inside each teamMessages entry to only the specific subgoals that message is about. Do not reuse the whole turn's subgoal set for every message.",
       "- Reply only when you add materially new evidence, a contradiction, or a decision-changing action. Otherwise prefer shouldReply=false and keep completion=\"continue\".",
       "- Set targetAgentId or targetAgentIds inside each teamMessages entry only when a specific next actor or subset needs to act; otherwise leave them empty to broadcast.",
       "- Use completion=\"done\" only when your branch is genuinely exhausted until a new goal, operator instruction, implementation change, or targeted request arrives.",
@@ -269,7 +270,7 @@ export class CodexAgentProcess {
       "- Implementation and review can reopen research. If downstream evidence changes assumptions, acceptance, eval contracts, or operator workflow, move the affected subgoal back to researching instead of trapping it in a build/review loop.",
       "Return exactly this shape between the XML tags:",
       "<codex_research_team-response>",
-      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessages":[{"content":"one concise message for the team","targetAgentId":null,"targetAgentIds":[]}],"subgoalUpdates":[{"title":"timing contract","topicKey":"timing-contract","summary":"Define the canonical timing contract before implementation.","addFacts":["Current timing source differs between export paths."],"addOpenQuestions":["Which timestamp source is canonical?"],"addRelevantFiles":["src/timing.ts"],"nextAction":"researchers should settle the canonical timing source","stage":"researching","decisionState":"open","assigneeAgentId":null,"mergedIntoSubgoalId":null}],"completion":"continue"}',
+      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessages":[{"content":"research the timestamp source before implementation","targetAgentId":"researcher_1","targetAgentIds":["researcher_1"],"subgoalIds":["sg-2"]},{"content":"hold build until the timing contract is resolved","targetAgentId":"coordinator_1","targetAgentIds":["coordinator_1"],"subgoalIds":["sg-2"]}],"subgoalUpdates":[{"title":"timing contract","topicKey":"timing-contract","summary":"Define the canonical timing contract before implementation.","addFacts":["Current timing source differs between export paths."],"addOpenQuestions":["Which timestamp source is canonical?"],"addRelevantFiles":["src/timing.ts"],"nextAction":"researchers should settle the canonical timing source","stage":"researching","decisionState":"open","assigneeAgentId":null,"mergedIntoSubgoalId":null}],"completion":"continue"}',
       "</codex_research_team-response>",
       `Finish with this token on its own line: ${token}`,
     ].join("\n\n");
@@ -662,6 +663,10 @@ function normalizeDirectedTeamMessages(parsed: Partial<AgentTurnResult> & { team
     Array.isArray(value)
       ? [...new Set(value.map((item) => String(item ?? "").trim()).filter(Boolean))]
       : [];
+  const normalizeSubgoalIds = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? [...new Set(value.map((item) => String(item ?? "").trim()).filter(Boolean))]
+      : [];
   const fromArray = Array.isArray(parsed.teamMessages)
     ? parsed.teamMessages
       .filter((item) => item && typeof item === "object")
@@ -678,6 +683,9 @@ function normalizeDirectedTeamMessages(parsed: Partial<AgentTurnResult> & { team
           content: String(record.content ?? "").trim(),
           targetAgentId: targetAgentIds.length === 1 ? targetAgentIds[0] : null,
           targetAgentIds,
+          ...(Object.prototype.hasOwnProperty.call(record, "subgoalIds")
+            ? { subgoalIds: normalizeSubgoalIds(record.subgoalIds) }
+            : {}),
         };
       })
       .filter((item) => item.content)

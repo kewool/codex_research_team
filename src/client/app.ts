@@ -2109,8 +2109,14 @@ function renderAgentDetailCard(agent: AnyObject): string {
           : message?.targetAgentId
             ? [String(message.targetAgentId)]
             : [];
-        const prefix = targetIds.length > 0 ? `[target ${targetIds.join(", ")}]\n` : "";
-        return `${prefix}${String(message?.content ?? "").trim()}`;
+        const subgoalIds = Array.isArray(message?.subgoalIds)
+          ? message.subgoalIds.map((value: unknown) => String(value ?? "").trim()).filter(Boolean)
+          : [];
+        const prefix = [
+          subgoalIds.length > 0 ? `[${subgoalIds.join(", ")}]` : "",
+          targetIds.length > 0 ? `[target ${targetIds.join(", ")}]` : "",
+        ].filter(Boolean).join(" ");
+        return `${prefix ? `${prefix}\n` : ""}${String(message?.content ?? "").trim()}`;
       }).join("\n\n")
     : "-";
   return `

@@ -192,6 +192,15 @@ function normalizeDirectedMessageTargets(message: DirectedTeamMessage | null | u
   return single ? [single] : [];
 }
 
+function normalizeDirectedMessageSubgoalIds(message: DirectedTeamMessage | null | undefined): string[] | null {
+  if (!message || typeof message !== "object" || !Object.prototype.hasOwnProperty.call(message, "subgoalIds")) {
+    return null;
+  }
+  return Array.isArray(message.subgoalIds)
+    ? [...new Set(message.subgoalIds.map((item) => String(item ?? "").trim()).filter(Boolean))]
+    : [];
+}
+
 function summarizeDirectedMessages(messages: DirectedTeamMessage[] | null | undefined, maxChars = 220): string {
   const items = (Array.isArray(messages) ? messages : [])
     .map((message) => {
@@ -1005,12 +1014,7 @@ export class LiveSession {
       return;
     }
     agent.retryCount = 0;
-    let normalizedResult = this.shouldSuppressPolicyWriteProbeBlocker(agent, result)
-      ? this.sanitizePolicyWriteProbeBlocker(result)
-      : result;
-    if (this.shouldSuppressBroadDataLoadTurn(agent, normalizedResult)) {
-      normalizedResult = this.sanitizeBroadDataLoadTurn(normalizedResult);
-    }
+    const normalizedResult = result;
     const obsoleteConflicts = this.buildObsoleteTurnConflicts(agentId, inFlightSubgoalRefs);
     const hasRequestedStateMutation = Array.isArray(normalizedResult.subgoalUpdates) && normalizedResult.subgoalUpdates.length > 0;
     const hasMeaningfulTurnOutput =
@@ -1042,11 +1046,15 @@ export class LiveSession {
     const rawTeamMessages = Array.isArray(normalizedResult.teamMessages)
       ? normalizedResult.teamMessages
           .filter((message) => message && typeof message === "object")
-          .map((message) => ({
-            content: compactWhitespace(message.content || ""),
-            targetAgentId: String(message.targetAgentId ?? "").trim() || null,
-            targetAgentIds: normalizeDirectedMessageTargets(message),
-          }))
+          .map((message) => {
+            const explicitSubgoalIds = normalizeDirectedMessageSubgoalIds(message);
+            return {
+              content: compactWhitespace(message.content || ""),
+              targetAgentId: String(message.targetAgentId ?? "").trim() || null,
+              targetAgentIds: normalizeDirectedMessageTargets(message),
+              ...(explicitSubgoalIds !== null ? { subgoalIds: explicitSubgoalIds } : {}),
+            };
+          })
           .filter((message) => message.content)
       : [];
     const allowedTargetSet = new Set(
@@ -1076,6 +1084,7 @@ export class LiveSession {
       !requestedStages.has("blocked") &&
       !requestedStages.has("researching");
     const materializeTeamMessage = (message: DirectedTeamMessage): DirectedTeamMessage => {
+      const effectiveSubgoalIds = this.resolveDirectedMessageSubgoalIds(message, referencedSubgoalIds);
       const normalizedTargetAgentIds = [...new Set(
         normalizeDirectedMessageTargets(message)
           .map((value) => String(value ?? "").trim())
@@ -1110,6 +1119,7 @@ export class LiveSession {
         content: message.content,
         ...(effectiveTargetAgentIds.length === 1 ? { targetAgentId: effectiveTargetAgentIds[0] } : {}),
         ...(effectiveTargetAgentIds.length > 0 ? { targetAgentIds: effectiveTargetAgentIds } : { targetAgentIds: [] }),
+        subgoalIds: effectiveSubgoalIds,
       };
     };
     let effectiveTeamMessages = normalizedResult.shouldReply && !shouldSuppressObsoleteTurn
@@ -1127,8 +1137,8 @@ export class LiveSession {
       normalizedResult.workingNotes = [];
     }
     effectiveTeamMessages = effectiveTeamMessages.filter((message) =>
-      !this.shouldSuppressDuplicateCoordinationTurn(agent, referencedSubgoalIds, normalizeDirectedMessageTargets(message)) &&
-      !this.shouldSuppressRepeatedResearchNote(agent, referencedSubgoalIds, normalizeDirectedMessageTargets(message), actualStateChangeIds.length > 0)
+      !this.shouldSuppressDuplicateCoordinationTurn(agent, normalizeDirectedMessageSubgoalIds(message) ?? [], normalizeDirectedMessageTargets(message)) &&
+      !this.shouldSuppressRepeatedResearchNote(agent, normalizeDirectedMessageSubgoalIds(message) ?? [], normalizeDirectedMessageTargets(message), actualStateChangeIds.length > 0)
     );
     if (normalizedResult.shouldReply && effectiveTeamMessages.length === 0) {
       normalizedResult.shouldReply = false;
@@ -1143,7 +1153,6 @@ export class LiveSession {
       turnCount: agent.snapshot.turnCount,
       shouldReply: normalizedResult.shouldReply,
       completion: normalizedResult.completion,
-      ...(referencedSubgoalIds.length > 0 ? { subgoalIds: referencedSubgoalIds } : {}),
     };
     agent.snapshot.completion = shouldSuppressObsoleteTurn && normalizedResult.completion !== "blocked" ? "continue" : normalizedResult.completion;
     agent.snapshot.workingNotes = normalizedResult.workingNotes;
@@ -1157,7 +1166,9 @@ export class LiveSession {
     effectiveTeamMessages.forEach((message, index) => {
       const targetIds = normalizeDirectedMessageTargets(message);
       const prefix = targetIds.length > 0 ? `[target ${targetIds.join(", ")}] ` : "";
-      this.appendAgentHistory(agent, "messages", `${prefix}${message.content}`, `Turn ${agent.snapshot.turnCount}${effectiveTeamMessages.length > 1 ? ` #${index + 1}` : ""}`);
+      const subgoalIds = normalizeDirectedMessageSubgoalIds(message) ?? [];
+      const subgoalPrefix = subgoalIds.length > 0 ? `[${subgoalIds.join(", ")}] ` : "";
+      this.appendAgentHistory(agent, "messages", `${subgoalPrefix}${prefix}${message.content}`, `Turn ${agent.snapshot.turnCount}${effectiveTeamMessages.length > 1 ? ` #${index + 1}` : ""}`);
     });
 
     this.persistAgent(agentId);
@@ -1183,14 +1194,16 @@ export class LiveSession {
       this.status = "running";
       for (const message of effectiveTeamMessages) {
         const targetIds = normalizeDirectedMessageTargets(message);
-        const researchNoteSignature = this.researchNoteSignature(agent, referencedSubgoalIds, targetIds);
+        const messageSubgoalIds = normalizeDirectedMessageSubgoalIds(message) ?? [];
+        const researchNoteSignature = this.researchNoteSignature(agent, messageSubgoalIds, targetIds);
         const eventMetadata = {
           ...baseEventMetadata,
+          ...(messageSubgoalIds.length > 0 ? { subgoalIds: messageSubgoalIds } : {}),
           ...(targetIds.length === 1 ? { targetAgentId: targetIds[0] } : {}),
           ...(targetIds.length > 0 ? { targetAgentIds: targetIds } : {}),
           ...(researchNoteSignature ? { researchNoteSignature } : {}),
-          ...(this.canCanonicalizeSubgoal(agentId) && referencedSubgoalIds.length > 0 && targetIds.length > 0
-            ? { routingSignature: this.coordinationRoutingSignature(referencedSubgoalIds, targetIds) }
+          ...(this.canCanonicalizeSubgoal(agentId) && messageSubgoalIds.length > 0 && targetIds.length > 0
+            ? { routingSignature: this.coordinationRoutingSignature(messageSubgoalIds, targetIds) }
             : {}),
         };
         this.publish(agent.preset.name, agent.preset.publishChannel, message.content, eventMetadata);
@@ -1447,18 +1460,27 @@ export class LiveSession {
     return current;
   }
 
+  private canonicalizeSubgoalIds(subgoalIds: string[] | null | undefined): string[] {
+    const ids = new Set<string>();
+    for (const subgoalId of Array.isArray(subgoalIds) ? subgoalIds : []) {
+      const canonical = this.canonicalSubgoalForId(subgoalId);
+      if (canonical?.id) {
+        ids.add(canonical.id);
+      }
+    }
+    return [...ids];
+  }
+
+  private resolveDirectedMessageSubgoalIds(message: DirectedTeamMessage | null | undefined, fallbackSubgoalIds: string[]): string[] {
+    const explicitSubgoalIds = normalizeDirectedMessageSubgoalIds(message);
+    if (explicitSubgoalIds !== null) {
+      return this.canonicalizeSubgoalIds(explicitSubgoalIds);
+    }
+    return this.canonicalizeSubgoalIds(fallbackSubgoalIds);
+  }
+
   private deriveSubgoalTopicKey(update: SubgoalUpdate, fallbackKey: string): string {
-    return (
-      normalizeTopicKey(update.topicKey)
-      || normalizeTopicKey([
-        update.title,
-        update.summary,
-        ...(Array.isArray(update.addResolvedDecisions) ? update.addResolvedDecisions : []),
-        ...(Array.isArray(update.addOpenQuestions) ? update.addOpenQuestions : []),
-        ...(Array.isArray(update.addFacts) ? update.addFacts : []),
-      ].filter(Boolean).join(" "))
-      || fallbackKey
-    );
+    return normalizeTopicKey(update.topicKey) || fallbackKey;
   }
 
   private requiresGoalBoardOwnership(agent: RuntimeAgent): boolean {
@@ -1859,16 +1881,7 @@ export class LiveSession {
     if (explicitTitle) {
       return shortenText(explicitTitle, 90);
     }
-    const candidates = [
-      compactWhitespace(update.summary || ""),
-      ...(Array.isArray(update.addResolvedDecisions) ? update.addResolvedDecisions : []).map((item) => compactWhitespace(String(item ?? ""))),
-      ...(Array.isArray(update.addOpenQuestions) ? update.addOpenQuestions : []).map((item) => compactWhitespace(String(item ?? ""))),
-      ...(Array.isArray(update.addFacts) ? update.addFacts : []).map((item) => compactWhitespace(String(item ?? ""))),
-    ].filter(Boolean);
-    if (candidates.length > 0) {
-      return shortenText(candidates[0], 90);
-    }
-    return `Untitled topic ${fallbackId}`;
+    return `Untitled ${fallbackId}`;
   }
 
   private shouldIgnoreStaleSubgoalUpdate(existing: SessionSubgoal, update: SubgoalUpdate): boolean {
@@ -1970,90 +1983,6 @@ export class LiveSession {
       });
     }
     return conflicts;
-  }
-
-  private isPolicyWriteProbeText(text: string | null | undefined): boolean {
-    const normalized = String(text ?? "").trim().toLowerCase();
-    if (!normalized) {
-      return false;
-    }
-    return /read-only|blocked by policy|rejected by policy|write probe|writable runtime|writable executor|workspace-local write|permission check/.test(normalized);
-  }
-
-  private shouldSuppressPolicyWriteProbeBlocker(agent: RuntimeAgent, result: AgentTurnResult): boolean {
-    const ownsBuildStage =
-      Array.isArray(agent.preset.policy?.ownedStages) &&
-      agent.preset.policy.ownedStages.includes("building");
-    if (!ownsBuildStage) {
-      return false;
-    }
-    const diagnostics = result.runtimeDiagnostics;
-    if (!diagnostics?.sawPolicyWriteBlock || diagnostics.sawFileChange) {
-      return false;
-    }
-    if ((Array.isArray(result.teamMessages) ? result.teamMessages : []).some((message) => this.isPolicyWriteProbeText(message?.content))) {
-      return true;
-    }
-    if ((result.workingNotes || []).some((note) => this.isPolicyWriteProbeText(note))) {
-      return true;
-    }
-    return (result.subgoalUpdates || []).some((update) =>
-      String(update?.stage ?? "").trim() === "blocked" ||
-      this.isPolicyWriteProbeText(update?.summary) ||
-      this.isPolicyWriteProbeText(update?.reopenReason) ||
-      this.isPolicyWriteProbeText(update?.nextAction) ||
-      (Array.isArray(update?.addFacts) && update.addFacts.some((entry) => this.isPolicyWriteProbeText(entry))) ||
-      (Array.isArray(update?.addOpenQuestions) && update.addOpenQuestions.some((entry) => this.isPolicyWriteProbeText(entry))),
-    );
-  }
-
-  private sanitizePolicyWriteProbeBlocker(result: AgentTurnResult): AgentTurnResult {
-    const sanitizedNotes = (result.workingNotes || []).filter((note) => !this.isPolicyWriteProbeText(note));
-    const sanitizedUpdates = (result.subgoalUpdates || []).filter((update) => String(update?.stage ?? "").trim() !== "blocked");
-    return {
-      ...result,
-      shouldReply: false,
-      workingNotes: [
-        ...sanitizedNotes,
-        "Ignored a policy-blocked shell write probe as a blocker signal. Keep routing unchanged unless a normal workspace-local edit path actually fails.",
-      ],
-      teamMessages: [],
-      subgoalUpdates: sanitizedUpdates,
-      completion: "continue",
-    };
-  }
-
-  private shouldSuppressBroadDataLoadTurn(agent: RuntimeAgent, result: AgentTurnResult): boolean {
-    const ownsDiscoveryStage =
-      Array.isArray(agent.preset.policy?.ownedStages) &&
-      (agent.preset.policy.ownedStages.includes("open") || agent.preset.policy.ownedStages.includes("researching"));
-    const ownsOnlyReviewStage =
-      Array.isArray(agent.preset.policy?.ownedStages) &&
-      agent.preset.policy.ownedStages.length > 0 &&
-      agent.preset.policy.ownedStages.every((stage) => stage === "ready_for_review");
-    if (!result.runtimeDiagnostics?.sawBroadDataLoad) {
-      return false;
-    }
-    if (!ownsDiscoveryStage && !ownsOnlyReviewStage) {
-      return false;
-    }
-    if (this.hasOperatorOverride(agent) || this.currentTurnHasTargetedRequest(agent)) {
-      return false;
-    }
-    return !Array.isArray(result.subgoalUpdates) || result.subgoalUpdates.length === 0;
-  }
-
-  private sanitizeBroadDataLoadTurn(result: AgentTurnResult): AgentTurnResult {
-    return {
-      ...result,
-      shouldReply: false,
-      teamMessages: [],
-      workingNotes: [
-        ...(Array.isArray(result.workingNotes) ? result.workingNotes : []),
-        "Suppressed a turn that relied on a broad dataset or pipeline load without changing the goal board. Reuse existing aggregates or narrow the probe next time.",
-      ],
-      completion: "continue",
-    };
   }
 
   private recordSubgoalConflicts(conflicts: StaleSubgoalConflict[]): string[] {
