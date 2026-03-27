@@ -46,6 +46,7 @@ interface RuntimeAgent {
   inFlightDigest: PendingDigest | null;
   inFlightSubgoalRefs: TrackedSubgoalRef[] | null;
   retryCount: number;
+  interruptReason: "stop" | "restart" | null;
   draining: boolean;
   drainTimer: ReturnType<typeof setTimeout> | null;
 }
@@ -636,6 +637,7 @@ export class LiveSession {
         inFlightDigest: null,
         inFlightSubgoalRefs: null,
         retryCount: 0,
+        interruptReason: null,
         draining: false,
         drainTimer: null,
       });
@@ -716,11 +718,20 @@ export class LiveSession {
         clearTimeout(agent.drainTimer);
         agent.drainTimer = null;
       }
+      agent.interruptReason = "stop";
       await agent.process.stop();
       this.updateAgentSnapshot(agent.preset.id, { status: "stopped", waitingForInput: false, lastError: "" });
     }
     this.status = "stopped";
     this.publish("system", "status", "Session stopped by operator.");
+  }
+
+  async stopAgent(agentId: string): Promise<void> {
+    await this.interruptAgent(agentId, "stop");
+  }
+
+  async restartAgent(agentId: string): Promise<void> {
+    await this.interruptAgent(agentId, "restart");
   }
 
   private publish(sender: string, channel: SessionChannel, content: string, metadata?: Record<string, unknown>): void {
@@ -823,7 +834,7 @@ export class LiveSession {
 
   private scheduleAgentDrain(agentId: string, immediate = false): void {
     const agent = this.agents.get(agentId);
-    if (!agent || this.status === "stopped") {
+    if (!agent || this.status === "stopped" || agent.snapshot.status === "stopped") {
       return;
     }
     if (agent.drainTimer) {
@@ -863,7 +874,7 @@ export class LiveSession {
 
   private async drainAgent(agentId: string): Promise<void> {
     const agent = this.agents.get(agentId);
-    if (!agent || agent.draining || agent.snapshot.status === "error" || agent.snapshot.status === "starting") {
+    if (!agent || agent.draining || agent.snapshot.status === "error" || agent.snapshot.status === "starting" || agent.snapshot.status === "stopped") {
       return;
     }
     if (!hasPendingDigest(agent.pendingDigest) && !this.goalBoardNeedsAttention(agent)) {
@@ -906,6 +917,9 @@ export class LiveSession {
       this.applyTurnResult(agentId, result, maxDigestSequence(digest), agent.inFlightSubgoalRefs);
     } catch (error) {
       const message = String((error as Error).message || "");
+      if (message.includes("Codex run stopped") && agent.interruptReason) {
+        return;
+      }
       if ((this.status === "stopping" || this.status === "stopped") && message.includes("Codex run stopped")) {
         return;
       }
@@ -937,6 +951,7 @@ export class LiveSession {
       agent.draining = false;
       agent.inFlightDigest = null;
       agent.inFlightSubgoalRefs = null;
+      agent.interruptReason = null;
       if (hasPendingDigest(agent.pendingDigest) && this.status !== "stopped") {
         this.scheduleAgentDrain(agentId, true);
       } else if (this.status === "running") {
@@ -1230,6 +1245,52 @@ export class LiveSession {
 
   private persistSession(): void {
     writeSessionSnapshot(this.files, this.snapshot(false));
+  }
+
+  private async interruptAgent(agentId: string, mode: "stop" | "restart"): Promise<void> {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new Error(`Unknown agent: ${agentId}`);
+    }
+    const hadInFlightTurn = agent.draining || Boolean(agent.inFlightDigest);
+    if (agent.drainTimer) {
+      clearTimeout(agent.drainTimer);
+      agent.drainTimer = null;
+    }
+    if (agent.inFlightDigest) {
+      this.restoreFailedInFlightDigest(agent, agent.inFlightDigest);
+    }
+    agent.retryCount = 0;
+    agent.interruptReason = mode;
+    await agent.process.stop();
+    this.updateAgentSnapshot(agentId, {
+      status: mode === "restart" ? "starting" : "stopped",
+      waitingForInput: false,
+      lastError: "",
+      ...(mode === "restart" ? { completion: "continue" } : {}),
+    });
+    if (!hadInFlightTurn) {
+      agent.interruptReason = null;
+    }
+    if (mode !== "restart") {
+      return;
+    }
+    this.status = "running";
+    try {
+      await agent.process.start(this.goal);
+    } catch (error) {
+      agent.interruptReason = null;
+      this.updateAgentSnapshot(agentId, {
+        status: "error",
+        waitingForInput: false,
+        lastError: String((error as Error).message || error),
+      });
+      throw error;
+    }
+    this.updateAgentSnapshot(agentId, { status: "idle", waitingForInput: false, lastError: "" });
+    if (hasPendingDigest(agent.pendingDigest) || this.goalBoardNeedsAttention(agent)) {
+      this.scheduleAgentDrain(agentId, true);
+    }
   }
 
   private resetGoalBoard(goal: string, actor: string): void {

@@ -220,6 +220,30 @@ export async function startWebServer(options?: { configPath?: string; host?: str
         return;
       }
 
+      const stopAgentMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/agents\/([^/]+)\/stop$/);
+      if (request.method === "POST" && stopAgentMatch) {
+        const session = manager.getSession(decodeURIComponent(stopAgentMatch[1]));
+        if (!session) {
+          sendJson(response, 404, { error: "Session not active." });
+          return;
+        }
+        await session.stopAgent(decodeURIComponent(stopAgentMatch[2]));
+        sendJson(response, 200, { session: session.snapshot() });
+        return;
+      }
+
+      const restartAgentMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/agents\/([^/]+)\/restart$/);
+      if (request.method === "POST" && restartAgentMatch) {
+        const session = manager.getSession(decodeURIComponent(restartAgentMatch[1]));
+        if (!session) {
+          sendJson(response, 404, { error: "Session not active." });
+          return;
+        }
+        await session.restartAgent(decodeURIComponent(restartAgentMatch[2]));
+        sendJson(response, 200, { session: session.snapshot() });
+        return;
+      }
+
       const stopMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/stop$/);
       if (request.method === "POST" && stopMatch) {
         const sessionId = decodeURIComponent(stopMatch[1]);

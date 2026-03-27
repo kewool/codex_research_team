@@ -39,6 +39,24 @@ type RenderScrollSnapshot = {
   anchors: Record<string, ScrollAnchorSnapshot>;
 };
 
+function saveElementScrollAnchor(element: HTMLElement, modeOverride?: ScrollAnchorMode): void {
+  const key = element.dataset.scrollKey;
+  if (!key) {
+    return;
+  }
+  const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+  const top = Math.max(0, Math.min(maxTop, element.scrollTop));
+  const distanceFromBottom = Math.max(0, maxTop - top);
+  state.sessionScroll.anchors[key] = {
+    top,
+    left: element.scrollLeft,
+    distanceFromBottom,
+    nearTop: top <= 12,
+    nearBottom: distanceFromBottom <= 12,
+    mode: modeOverride ?? (element.dataset.scrollMode === "prepend" ? "prepend" : "append"),
+  };
+}
+
 function captureRenderScrollSnapshot(): RenderScrollSnapshot | null {
   if (state.route.name !== "session") {
     return null;
@@ -111,21 +129,7 @@ function syncSessionScrollMemoryFromDom(): void {
   }
   state.sessionScroll.windowY = window.scrollY;
   document.querySelectorAll<HTMLElement>("[data-scroll-key]").forEach((element) => {
-    const key = element.dataset.scrollKey;
-    if (!key) {
-      return;
-    }
-    const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
-    const top = Math.max(0, Math.min(maxTop, element.scrollTop));
-    const distanceFromBottom = Math.max(0, maxTop - top);
-    state.sessionScroll.anchors[key] = {
-      top,
-      left: element.scrollLeft,
-      distanceFromBottom,
-      nearTop: top <= 12,
-      nearBottom: distanceFromBottom <= 12,
-      mode: element.dataset.scrollMode === "prepend" ? "prepend" : "append",
-    };
+    saveElementScrollAnchor(element);
   });
 }
 
@@ -1460,8 +1464,11 @@ function blankPageCache(): AnyObject {
     items: [],
     nextBefore: null,
     hasMore: false,
+    serverHasMore: false,
+    overflowBackfill: false,
     loaded: false,
     loading: false,
+    lastLoadedBefore: null,
     error: null,
   };
 }
@@ -1511,11 +1518,23 @@ function uniqueItems(items: AnyObject[], keyOf: (item: AnyObject) => string): An
   return output;
 }
 
+function recomputePageHasMore(cache: AnyObject): void {
+  cache.hasMore = Boolean(cache.serverHasMore || cache.overflowBackfill);
+  if (!cache.hasMore) {
+    cache.nextBefore = null;
+  }
+}
+
 function refreshPageCursor(cache: AnyObject): void {
+  if (!cache.serverHasMore && !cache.overflowBackfill) {
+    cache.nextBefore = null;
+    return;
+  }
   const cursors = (cache.items || [])
     .map((item: AnyObject) => Number(item?._cursor))
     .filter((value: number) => Number.isFinite(value) && value > 0 && value < Number.MAX_SAFE_INTEGER);
   if (cursors.length === 0) {
+    cache.nextBefore = null;
     return;
   }
   const nextBefore = Math.min(...cursors) - 1;
@@ -1534,7 +1553,15 @@ async function loadSessionFeed(sessionId: string, options: AnyObject = {}): Prom
     cache.items = [];
     cache.nextBefore = null;
     cache.hasMore = false;
+    cache.serverHasMore = false;
+    cache.overflowBackfill = false;
     cache.loaded = false;
+    cache.lastLoadedBefore = null;
+  }
+  const before = options.reset ? null : cache.nextBefore;
+  const requestCursor = before == null ? "__latest__" : String(before);
+  if (!options.reset && !options.force && cache.loaded && cache.lastLoadedBefore === requestCursor) {
+    return;
   }
   cache.loading = true;
   cache.error = null;
@@ -1542,16 +1569,18 @@ async function loadSessionFeed(sessionId: string, options: AnyObject = {}): Prom
     scheduleRender();
   }
   try {
-    const before = options.reset ? null : cache.nextBefore;
     const payload = await api(`/api/sessions/${encodeURIComponent(sessionId)}/feed?limit=${FEED_PAGE_SIZE}${before ? `&before=${encodeURIComponent(String(before))}` : ""}`);
     const nextItems = Array.isArray(payload.items) ? payload.items : [];
     cache.items = options.reset
       ? nextItems
       : [...cache.items, ...nextItems.filter((item: AnyObject) => !cache.items.some((current: AnyObject) => eventKey(current) === eventKey(item)))];
+    cache.serverHasMore = Boolean(payload.hasMore);
+    cache.overflowBackfill = false;
     cache.nextBefore = payload.nextBefore ?? null;
-    cache.hasMore = Boolean(payload.hasMore);
+    cache.lastLoadedBefore = requestCursor;
     cache.loaded = true;
     refreshPageCursor(cache);
+    recomputePageHasMore(cache);
   } finally {
     cache.loading = false;
     if (state.route.name === "session" && state.route.sessionId === sessionId) {
@@ -1572,7 +1601,15 @@ async function loadAgentHistory(sessionId: string, agentId: string, kind: string
     cache.items = [];
     cache.nextBefore = null;
     cache.hasMore = false;
+    cache.serverHasMore = false;
+    cache.overflowBackfill = false;
     cache.loaded = false;
+    cache.lastLoadedBefore = null;
+  }
+  const before = options.reset ? null : cache.nextBefore;
+  const requestCursor = before == null ? "__latest__" : String(before);
+  if (!options.reset && !options.force && cache.loaded && cache.lastLoadedBefore === requestCursor) {
+    return;
   }
   cache.loading = true;
   cache.error = null;
@@ -1580,17 +1617,19 @@ async function loadAgentHistory(sessionId: string, agentId: string, kind: string
     scheduleRender();
   }
   try {
-    const before = options.reset ? null : cache.nextBefore;
     const payload = await api(`/api/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}/history?kind=${encodeURIComponent(kind)}&limit=${historyPageSize(kind)}${before ? `&before=${encodeURIComponent(String(before))}` : ""}`);
     const nextItems = Array.isArray(payload.items) ? payload.items : [];
     cache.items = options.reset
       ? nextItems
       : [...cache.items, ...nextItems.filter((item: AnyObject) => !cache.items.some((current: AnyObject) => historyEntryKey(current) === historyEntryKey(item)))];
+    cache.serverHasMore = Boolean(payload.hasMore);
+    cache.overflowBackfill = false;
     cache.nextBefore = payload.nextBefore ?? null;
-    cache.hasMore = Boolean(payload.hasMore);
+    cache.lastLoadedBefore = requestCursor;
     cache.loaded = true;
     cache.items = (cache.items || []).slice(0, maxVisibleHistoryItems(kind));
     refreshPageCursor(cache);
+    recomputePageHasMore(cache);
   } finally {
     cache.loading = false;
     if (state.route.name === "session" && state.route.sessionId === sessionId) {
@@ -1618,10 +1657,12 @@ async function loadVisibleAgentHistory(force = false): Promise<void> {
 
 function prependFeedEvent(sessionId: string, event: AnyObject): void {
   const cache = feedCache(sessionId);
-  cache.items = uniqueItems([event, ...(cache.items || [])], eventKey).slice(0, MAX_VISIBLE_FEED_ITEMS);
+  const merged = uniqueItems([event, ...(cache.items || [])], eventKey);
+  cache.items = merged.slice(0, MAX_VISIBLE_FEED_ITEMS);
   cache.loaded = true;
-  cache.hasMore = cache.hasMore || Boolean(cache.nextBefore) || cache.items.length >= MAX_VISIBLE_FEED_ITEMS;
+  cache.overflowBackfill = cache.overflowBackfill || merged.length > MAX_VISIBLE_FEED_ITEMS;
   refreshPageCursor(cache);
+  recomputePageHasMore(cache);
 }
 
 function prependLiveHistory(sessionId: string, agentId: string, kind: string, text: string): void {
@@ -1637,10 +1678,12 @@ function prependLiveHistory(sessionId: string, agentId: string, kind: string, te
     label: null,
     _cursor: Number.MAX_SAFE_INTEGER,
   };
-  cache.items = uniqueItems([liveEntry, ...(cache.items || [])], historyEntryKey).slice(0, maxVisibleHistoryItems(kind));
+  const merged = uniqueItems([liveEntry, ...(cache.items || [])], historyEntryKey);
+  cache.items = merged.slice(0, maxVisibleHistoryItems(kind));
   cache.loaded = true;
-  cache.hasMore = cache.hasMore || Boolean(cache.nextBefore) || cache.items.length >= maxVisibleHistoryItems(kind);
+  cache.overflowBackfill = cache.overflowBackfill || merged.length > maxVisibleHistoryItems(kind);
   refreshPageCursor(cache);
+  recomputePageHasMore(cache);
 }
 
 function appendAgentStreamTail(sessionId: string, agentId: string, kind: "stdout" | "stderr", text: string): void {
@@ -1762,7 +1805,7 @@ function renderSubgoalBoard(session: AnyObject): string {
           </div>
         </header>
         <p>${escapeHtml(subgoal.summary || "-")}</p>
-        <div class="subgoal-memory">
+        <div class="subgoal-memory" data-scroll-key="${escapeHtml(`subgoal-memory:${session.id}:${String(subgoal.id || "")}`)}" data-scroll-mode="append">
           ${renderMemoryList("Facts", subgoal.facts)}
           ${renderMemoryList("Open", subgoal.openQuestions)}
           ${renderMemoryList("Resolved", subgoal.resolvedDecisions)}
@@ -1779,14 +1822,14 @@ function renderSubgoalBoard(session: AnyObject): string {
   };
   return `
     ${activeSubgoals.length > 0 ? `
-      <div class="subgoal-board" data-subgoal-count="${escapeHtml(String(activeSubgoals.length))}">
+      <div class="subgoal-board" data-subgoal-count="${escapeHtml(String(activeSubgoals.length))}" data-scroll-key="${escapeHtml(`subgoal-board:${session.id}:active`)}" data-scroll-mode="append">
         ${activeSubgoals.map((subgoal: AnyObject) => renderSubgoalCard(subgoal)).join("")}
       </div>
     ` : `<p class="muted">No active subgoals yet.</p>`}
     ${mergedSubgoals.length > 0 ? `
       <details class="subgoal-archive">
         <summary>Merged topics ${escapeHtml(String(mergedSubgoals.length))}</summary>
-        <div class="subgoal-board subgoal-board-archived" data-subgoal-count="${escapeHtml(String(mergedSubgoals.length))}">
+        <div class="subgoal-board subgoal-board-archived" data-subgoal-count="${escapeHtml(String(mergedSubgoals.length))}" data-scroll-key="${escapeHtml(`subgoal-board:${session.id}:archived`)}" data-scroll-mode="append">
           ${mergedSubgoals.map((subgoal: AnyObject) => renderSubgoalCard(subgoal, true)).join("")}
         </div>
       </details>
@@ -1925,7 +1968,7 @@ function renderSessionPage(): string {
           ${agents.map(renderAgentPickerItem).join("")}
         </div>
       </section>
-      ${selectedAgent ? renderFocusedAgentCard(session.id, selectedAgent) : `<section class="panel empty-panel"><p class="muted">No agent selected.</p></section>`}
+      ${selectedAgent ? renderFocusedAgentCard(session, selectedAgent) : `<section class="panel empty-panel"><p class="muted">No agent selected.</p></section>`}
     </section>
   `;
 }
@@ -1947,7 +1990,7 @@ function renderAgentPickerItem(agent: AnyObject): string {
   `;
 }
 
-function renderFocusedAgentCard(sessionId: string, agent: AnyObject): string {
+function renderFocusedAgentCard(session: AnyObject, agent: AnyObject): string {
   const tab = currentAgentTab();
   const tabs = [
     ["notes", "Notes"],
@@ -1965,7 +2008,11 @@ function renderFocusedAgentCard(sessionId: string, agent: AnyObject): string {
           <h3>${escapeHtml(agent.name)}</h3>
           <p class="muted">${escapeHtml(agent.brief)}</p>
         </div>
-        <span class="status-pill ${escapeHtml(agent.status)}">${escapeHtml(agent.status)}</span>
+        <div class="inline-actions">
+          ${session.isLive ? `<button class="ghost danger" data-stop-agent="${escapeHtml(agent.id)}" ${agent.status === "stopped" ? "disabled" : ""}>Stop Agent</button>` : ""}
+          ${session.isLive ? `<button class="ghost" data-restart-agent="${escapeHtml(agent.id)}">Restart Agent</button>` : ""}
+          <span class="status-pill ${escapeHtml(agent.status)}">${escapeHtml(agent.status)}</span>
+        </div>
       </div>
       <div class="agent-meta-bar">
         <span><strong>Turns</strong>${escapeHtml(String(agent.turnCount))}</span>
@@ -1978,7 +2025,7 @@ function renderFocusedAgentCard(sessionId: string, agent: AnyObject): string {
         ${tabs.map(([value, label]) => `<button class="tab-button ${tab === value ? "active" : ""}" data-agent-tab="${value}">${label}</button>`).join("")}
       </div>
       <section class="agent-output-panel">
-        <div class="history-list" data-agent-history="1" data-agent-id="${escapeHtml(agent.id)}" data-history-kind="${escapeHtml(historyKindForTab(tab))}" data-scroll-key="${escapeHtml(`agent-output:${agent.id}:${tab}`)}" data-scroll-mode="append">${renderAgentTabContent(sessionId, agent, tab)}</div>
+        <div class="history-list" data-agent-history="1" data-agent-id="${escapeHtml(agent.id)}" data-history-kind="${escapeHtml(historyKindForTab(tab))}" data-scroll-key="${escapeHtml(`agent-output:${agent.id}:${tab}`)}" data-scroll-mode="append">${renderAgentTabContent(session.id, agent, tab)}</div>
       </section>
     </section>
   `;
@@ -2495,6 +2542,12 @@ function wireSessionActions(): void {
   if (resume) {
     resume.onclick = () => void withGuard(resumeCurrentSession());
   }
+  document.querySelectorAll<HTMLButtonElement>("[data-stop-agent]").forEach((button) => {
+    button.onclick = () => void withGuard(stopSessionAgent(button.dataset.stopAgent || ""));
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-restart-agent]").forEach((button) => {
+    button.onclick = () => void withGuard(restartSessionAgent(button.dataset.restartAgent || ""));
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-select-agent]").forEach((button) => {
     button.onclick = () => {
       state.selectedAgentId = button.dataset.selectAgent || null;
@@ -2514,7 +2567,12 @@ function wireSessionActions(): void {
   if (feedList && feedList.dataset.historyBound !== "1") {
     feedList.dataset.historyBound = "1";
     feedList.addEventListener("scroll", () => {
+      const cache = feedCache(session.id);
+      if (cache.loading || !cache.hasMore) {
+        return;
+      }
       if (feedList.scrollTop + feedList.clientHeight >= feedList.scrollHeight - 120) {
+        saveElementScrollAnchor(feedList, "append");
         void withGuard(loadSessionFeed(session.id));
       }
     }, { passive: true });
@@ -2527,6 +2585,10 @@ function wireSessionActions(): void {
       const agentId = historyList.dataset.agentId || "";
       const kind = historyList.dataset.historyKind || historyKindForTab(currentAgentTab());
       if (kind === "stdout" || kind === "stderr") {
+        return;
+      }
+      const cache = agentHistoryCache(session.id, agentId, kind);
+      if (cache.loading || !cache.hasMore) {
         return;
       }
       if (historyList.scrollTop + historyList.clientHeight >= historyList.scrollHeight - 120) {
@@ -2574,6 +2636,32 @@ async function resumeCurrentSession(): Promise<void> {
   const payload = await api(`/api/sessions/${encodeURIComponent(session.id)}/resume`, { method: "POST" });
   upsertSession(payload.session);
   bindSessionStream();
+  clearFlash();
+  render();
+}
+
+async function stopSessionAgent(agentId: string): Promise<void> {
+  const session = currentSession();
+  if (!session || !agentId) {
+    return;
+  }
+  const payload = await api(`/api/sessions/${encodeURIComponent(session.id)}/agents/${encodeURIComponent(agentId)}/stop`, {
+    method: "POST",
+  });
+  upsertSession(payload.session);
+  clearFlash();
+  render();
+}
+
+async function restartSessionAgent(agentId: string): Promise<void> {
+  const session = currentSession();
+  if (!session || !agentId) {
+    return;
+  }
+  const payload = await api(`/api/sessions/${encodeURIComponent(session.id)}/agents/${encodeURIComponent(agentId)}/restart`, {
+    method: "POST",
+  });
+  upsertSession(payload.session);
   clearFlash();
   render();
 }

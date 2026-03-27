@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { appendFileSync, writeFileSync } from "node:fs";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { AgentPreset, AgentSnapshot, AgentTurnResult, AppConfig, TokenUsage } from "../shared/types";
 import { AgentFiles, appendAgentHistory } from "./storage";
 import { ensureParent, normalizePath, nowIso, tailText } from "./utils";
@@ -172,6 +172,7 @@ export class CodexAgentProcess {
     if (this.ready || this.process) {
       return;
     }
+    this.stopping = false;
     const bootstrapPrompt = [
       `You are ${this.agent.name}, one agent in a long-running multi-agent Codex collaboration runtime.`,
       `Standing brief: ${this.agent.brief}`,
@@ -313,11 +314,22 @@ export class CodexAgentProcess {
 
   async stop(): Promise<void> {
     this.stopping = true;
-    if (this.process) {
+    const currentProcess = this.process;
+    if (currentProcess) {
       try {
-        this.process.kill();
+        currentProcess.kill();
       } catch {
         // ignore
+      }
+      if (process.platform === "win32" && currentProcess.pid) {
+        try {
+          execFileSync("taskkill", ["/PID", String(currentProcess.pid), "/T", "/F"], {
+            stdio: "ignore",
+            windowsHide: true,
+          });
+        } catch {
+          // ignore
+        }
       }
     }
     this.process = null;
