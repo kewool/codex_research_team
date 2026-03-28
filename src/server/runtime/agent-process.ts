@@ -1,10 +1,18 @@
 // @ts-nocheck
 import { appendFileSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { AgentPreset, AgentSnapshot, AgentTurnResult, AppConfig, DirectedTeamMessage, TokenUsage } from "../shared/types";
-import { AgentFiles, appendAgentHistory } from "./storage";
-import { ensureParent, normalizePath, nowIso, tailText } from "./utils";
+import { AgentPreset, AgentSnapshot, AgentTurnResult, AppConfig, TokenUsage } from "../../shared/types";
+import { AgentFiles, appendAgentHistory } from "../persistence/storage";
+import { ensureParent, nowIso, tailText } from "../lib/utils";
 import { effectiveCodexHomeDir } from "./codex-home";
+import { operatingModeLines, routingGuidanceLines, workspaceGuardrailLines } from "./prompt-rules";
+import {
+  hasStructuredResponseEnvelope,
+  looksLikeBroadDataLoadCommand,
+  looksLikeWriteProbeCommand,
+  parseAgentTurnResult,
+} from "./turn-parser";
+import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "./token-usage";
 
 export interface AgentProcessHooks {
   onState(state: Partial<Record<string, unknown>>): void;
@@ -44,91 +52,11 @@ interface CompletedRun {
   sawBroadDataLoad: boolean;
 }
 
-function emptyTokenUsage(): TokenUsage {
-  return {
-    inputTokens: 0,
-    cachedInputTokens: 0,
-    outputTokens: 0,
-  };
-}
-
-function normalizeTokenUsage(usage?: { input_tokens?: number; cached_input_tokens?: number; output_tokens?: number }): TokenUsage {
-  return {
-    inputTokens: Number(usage?.input_tokens || 0),
-    cachedInputTokens: Number(usage?.cached_input_tokens || 0),
-    outputTokens: Number(usage?.output_tokens || 0),
-  };
-}
-
-function addTokenUsage(left: TokenUsage, right: TokenUsage): TokenUsage {
-  return {
-    inputTokens: Number(left?.inputTokens || 0) + Number(right?.inputTokens || 0),
-    cachedInputTokens: Number(left?.cachedInputTokens || 0) + Number(right?.cachedInputTokens || 0),
-    outputTokens: Number(left?.outputTokens || 0) + Number(right?.outputTokens || 0),
-  };
-}
-
-function operatingModeLines(agent: AgentPreset): string[] {
-  const customLines = Array.isArray(agent.policy?.promptGuidance)
-    ? agent.policy.promptGuidance.map((line) => `- ${String(line ?? "").trim()}`).filter((line) => line !== "-")
-    : [];
-  if (customLines.length > 0) {
-    return customLines;
-  }
-  return [
-    "- Work according to your standing brief and the current trigger.",
-    "- Use your configured channels and the visible team transcript to decide what to publish or who to target next.",
-  ];
-}
-
-function workspaceGuardrailLines(workspacePath: string): string[] {
-  const normalizedWorkspacePath = normalizePath(workspacePath);
-  return [
-    `- Your allowed working scope is the selected workspace only: ${normalizedWorkspacePath}. Treat paths outside this workspace as out-of-scope.`,
-    "- The runtime may permit real filesystem writes so you can modify the selected workspace directly. Treat that as execution capability for this workspace only, not permission to inspect or modify unrelated files.",
-    "- Do not create, modify, delete, or publish files outside the selected workspace.",
-    "- Do not introduce or normalize repo-root output trees such as exports/, release/, publish/, or other sibling directories.",
-    "- If existing workspace code tries to write outside the selected workspace, do not implement or preserve that behavior. Treat it as a workflow risk to report and keep outputs workspace-relative instead.",
-    "- Do not use synthetic write probes as proof that the workspace is blocked. If you already have an actionable workspace-local task, prefer the normal edit/apply path first.",
-    "- Do not open, print, or dump raw binary/media files directly. Treat audio, wav, mp3, image, and other large binaries as opaque assets unless a specific tool is required.",
-    "- Prefer metadata, filenames, directory listings, and targeted text/code reads over broad workspace scans.",
-    "- Treat large structured data files and logs as expensive context. Do not fully load or print them by default; prefer schema/header checks, row counts, targeted filters, sampled slices, or narrow aggregations first.",
-    "- Do not materialize full stream/chat datasets into memory by default with helpers like load_chat_log, pandas.read_csv, or csv.DictReader over the entire file. Only do that after smaller probes prove it is necessary for the current subgoal.",
-    "- Do not run full-dataset pipeline paths like ChatHighlightDetector, HighlightRescorer, or ShortsGenerator against project-scale assets by default. Prefer smaller fixtures, bounded slices, or existing regressions first.",
-    "- Reuse already-established aggregates from the transcript or goal board instead of recomputing the same full-file statistics on later turns.",
-    "- Avoid generated artifacts and scratch directories such as tmp_*, output folders, caches, or derived stems unless they are the explicit subject of the turn.",
-    "- Do not repeatedly reread unchanged large files just to restate prior findings. Reuse the transcript and current trigger as the primary context.",
-  ];
-}
-
-function routingGuidanceLines(agent: AgentPreset, allAgents: AgentPreset[]): string[] {
-  const agentIds = allAgents.map((entry) => entry.id).join(", ");
-  const lines = [
-    `- Available agent ids for targeted team messages: ${agentIds}.`,
-    "- Inside each teamMessages entry, you may optionally set targetAgentId for one recipient or targetAgentIds for multiple recipients. Leave them empty to broadcast normally.",
-    "- Use targeted messages only when one or more specific agents need to act. Otherwise broadcast to the team channel you publish on.",
-  ];
-  const allowedTargets = Array.isArray(agent.policy?.allowedTargetAgentIds)
-    ? agent.policy.allowedTargetAgentIds.map((value) => String(value ?? "").trim()).filter(Boolean)
-    : [];
-  if (allowedTargets.length > 0) {
-    lines.push(`- If you target another agent, you may only target these agent ids: ${allowedTargets.join(", ")}.`);
-  }
-  return lines;
-}
-
-function hasStructuredResponseEnvelope(rawText: string): boolean {
-  return /<codex_research_team-response>[\s\S]*?<\/codex_research_team-response>/i.test(String(rawText ?? ""));
-}
-
-function looksLikeWriteProbeCommand(command: string): boolean {
-  const normalized = String(command ?? "").toLowerCase();
-  return /(new-item|set-content|add-content|out-file|copy-item|move-item|remove-item|mkdir|md |ni |touch|>>|>\s*[^|]|apply_patch|write)/.test(normalized);
-}
-
-function looksLikeBroadDataLoadCommand(command: string): boolean {
-  const normalized = String(command ?? "").toLowerCase();
-  return /(load_chat_log\s*\(|pandas\.read_csv|pd\.read_csv|csv\.dictreader|import-csv\b|chathighlightdetector\s*\(|find_highlights\s*\(|highlightrescorer\s*\(|shortsgenerator\s*\(|generator\.generate\s*\()/i.test(normalized);
+interface RunState {
+  sawFileChange: boolean;
+  sawPolicyWriteBlock: boolean;
+  sawBroadDataLoad: boolean;
+  sawTurnCompleted: boolean;
 }
 
 export class CodexAgentProcess {
@@ -319,21 +247,7 @@ export class CodexAgentProcess {
     this.stopping = true;
     const currentProcess = this.process;
     if (currentProcess) {
-      try {
-        currentProcess.kill();
-      } catch {
-        // ignore
-      }
-      if (process.platform === "win32" && currentProcess.pid) {
-        try {
-          execFileSync("taskkill", ["/PID", String(currentProcess.pid), "/T", "/F"], {
-            stdio: "ignore",
-            windowsHide: true,
-          });
-        } catch {
-          // ignore
-        }
-      }
+      await this.terminateProcessTree(currentProcess, 3000);
     }
     this.process = null;
     this.ready = false;
@@ -364,12 +278,34 @@ export class CodexAgentProcess {
       let stdoutBuffer = "";
       let stderrBuffer = "";
       const agentMessages: string[] = [];
-      const runState = {
+      const runState: RunState = {
         sawFileChange: false,
         sawPolicyWriteBlock: false,
         sawBroadDataLoad: false,
+        sawTurnCompleted: false,
       };
       let settled = false;
+
+      const tryResolveCompletedTurn = (): void => {
+        if (settled || !runState.sawTurnCompleted) {
+          return;
+        }
+        const combined = agentMessages.join("\n\n").trim();
+        const sawToken = combined.includes(token);
+        if (!sawToken && !hasStructuredResponseEnvelope(combined)) {
+          return;
+        }
+        const responseText = sawToken ? combined.slice(0, combined.indexOf(token)).trim() : combined;
+        resolveWith({
+          responseText,
+          sawToken,
+          stderrText: stderrBuffer.trim(),
+          sawFileChange: runState.sawFileChange,
+          sawPolicyWriteBlock: runState.sawPolicyWriteBlock,
+          sawBroadDataLoad: runState.sawBroadDataLoad,
+        });
+        void this.terminateProcessTree(child, 1000);
+      };
 
       const rejectWith = (error: Error): void => {
         if (settled) {
@@ -401,6 +337,7 @@ export class CodexAgentProcess {
           const line = stdoutBuffer.slice(0, newlineIndex).replace(/\r$/, "");
           stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
           this.handleStdoutLine(line, agentMessages, runState);
+          tryResolveCompletedTurn();
           newlineIndex = stdoutBuffer.indexOf("\n");
         }
       });
@@ -415,6 +352,10 @@ export class CodexAgentProcess {
         if (stdoutBuffer.trim()) {
           this.handleStdoutLine(stdoutBuffer.trim(), agentMessages, runState);
           stdoutBuffer = "";
+        }
+        tryResolveCompletedTurn();
+        if (settled) {
+          return;
         }
         if (this.stopping) {
           rejectWith(new Error("Codex run stopped."));
@@ -445,7 +386,7 @@ export class CodexAgentProcess {
   private handleStdoutLine(
     line: string,
     agentMessages: string[],
-    runState: { sawFileChange: boolean; sawPolicyWriteBlock: boolean; sawBroadDataLoad: boolean },
+    runState: RunState,
   ): void {
     const trimmed = line.trim();
     if (!trimmed) {
@@ -477,6 +418,7 @@ export class CodexAgentProcess {
       case "turn.completed": {
         const usage = normalizeTokenUsage(event.usage ?? {});
         this.totalUsage = addTokenUsage(this.totalUsage, usage);
+        runState.sawTurnCompleted = true;
         this.hooks.onState({
           lastUsage: usage,
           totalUsage: this.totalUsage,
@@ -656,161 +598,43 @@ export class CodexAgentProcess {
   private quoteCmdArgument(value: string): string {
     return `"${String(value ?? "").replace(/"/g, '\\"')}"`;
   }
-}
 
-function normalizeDirectedTeamMessages(parsed: Partial<AgentTurnResult> & { teamMessage?: string; targetAgentId?: string | null; targetAgentIds?: string[] | null }): DirectedTeamMessage[] {
-  const normalizeTargetIds = (value: unknown): string[] =>
-    Array.isArray(value)
-      ? [...new Set(value.map((item) => String(item ?? "").trim()).filter(Boolean))]
-      : [];
-  const normalizeSubgoalIds = (value: unknown): string[] =>
-    Array.isArray(value)
-      ? [...new Set(value.map((item) => String(item ?? "").trim()).filter(Boolean))]
-      : [];
-  const fromArray = Array.isArray(parsed.teamMessages)
-    ? parsed.teamMessages
-      .filter((item) => item && typeof item === "object")
-      .map((item) => {
-        const record = item as Record<string, unknown>;
-        const parsedTargetAgentIds = normalizeTargetIds(record.targetAgentIds);
-        const singleTargetAgentId = String(record.targetAgentId ?? "").trim() || null;
-        const targetAgentIds = parsedTargetAgentIds.length > 0
-          ? parsedTargetAgentIds
-          : singleTargetAgentId
-            ? [singleTargetAgentId]
-            : [];
-        return {
-          content: String(record.content ?? "").trim(),
-          targetAgentId: targetAgentIds.length === 1 ? targetAgentIds[0] : null,
-          targetAgentIds,
-          ...(Object.prototype.hasOwnProperty.call(record, "subgoalIds")
-            ? { subgoalIds: normalizeSubgoalIds(record.subgoalIds) }
-            : {}),
-        };
-      })
-      .filter((item) => item.content)
-    : [];
-  if (fromArray.length > 0) {
-    return fromArray;
-  }
-  const legacyContent = String(parsed.teamMessage ?? "").trim();
-  if (!legacyContent) {
-    return [];
-  }
-  const parsedTargetAgentIds = normalizeTargetIds(parsed.targetAgentIds);
-  const singleTargetAgentId = String(parsed.targetAgentId ?? "").trim() || null;
-  const targetAgentIds = parsedTargetAgentIds.length > 0
-    ? parsedTargetAgentIds
-    : singleTargetAgentId
-      ? [singleTargetAgentId]
-      : [];
-  return [{
-    content: legacyContent,
-    targetAgentId: targetAgentIds.length === 1 ? targetAgentIds[0] : null,
-    targetAgentIds,
-  }];
-}
-
-function normalizeParsedTurnResult(parsed: Partial<AgentTurnResult> & { teamMessage?: string; targetAgentId?: string | null; targetAgentIds?: string[] | null }, rawText: string): AgentTurnResult {
-  const normalizeStringArray = (value: unknown): string[] =>
-    Array.isArray(value)
-      ? value.map((item) => String(item ?? "").trim()).filter(Boolean)
-      : [];
-  const notes = Array.isArray(parsed.workingNotes)
-    ? parsed.workingNotes.map((item) => String(item).trim()).filter(Boolean)
-    : [];
-  const completion = parsed.completion === "done" || parsed.completion === "blocked" ? parsed.completion : "continue";
-  const teamMessages = normalizeDirectedTeamMessages(parsed);
-  const subgoalUpdates = Array.isArray(parsed.subgoalUpdates)
-    ? parsed.subgoalUpdates
-        .filter((item) => item && typeof item === "object")
-        .map((item) => ({
-          id: String(
-            (item as Record<string, unknown>).id
-            ?? (item as Record<string, unknown>).subgoalId
-            ?? "",
-          ).trim() || null,
-          expectedRevision: Number.isFinite(Number((item as Record<string, unknown>).expectedRevision))
-            ? Math.max(1, Number((item as Record<string, unknown>).expectedRevision))
-            : null,
-          title: String((item as Record<string, unknown>).title ?? "").trim() || null,
-          topicKey: String((item as Record<string, unknown>).topicKey ?? "").trim() || null,
-          summary: String((item as Record<string, unknown>).summary ?? "").trim() || null,
-          addFacts: normalizeStringArray((item as Record<string, unknown>).addFacts),
-          addOpenQuestions: normalizeStringArray((item as Record<string, unknown>).addOpenQuestions),
-          addResolvedDecisions: normalizeStringArray((item as Record<string, unknown>).addResolvedDecisions),
-          addAcceptanceCriteria: normalizeStringArray((item as Record<string, unknown>).addAcceptanceCriteria),
-          addRelevantFiles: normalizeStringArray((item as Record<string, unknown>).addRelevantFiles),
-          ...(Object.prototype.hasOwnProperty.call(item as Record<string, unknown>, "nextAction")
-            ? { nextAction: String((item as Record<string, unknown>).nextAction ?? "").trim() || null }
-            : {}),
-          stage: String((item as Record<string, unknown>).stage ?? "").trim() || null,
-          decisionState: String((item as Record<string, unknown>).decisionState ?? "").trim() || null,
-          reopenReason: String((item as Record<string, unknown>).reopenReason ?? "").trim() || null,
-          assigneeAgentId: String((item as Record<string, unknown>).assigneeAgentId ?? "").trim() || null,
-          mergedIntoSubgoalId: Object.prototype.hasOwnProperty.call(item as Record<string, unknown>, "mergedIntoSubgoalId")
-            ? (String((item as Record<string, unknown>).mergedIntoSubgoalId ?? "").trim() || null)
-            : undefined,
-        }))
-    : [];
-  return {
-    shouldReply: Boolean(parsed.shouldReply) && teamMessages.length > 0,
-    workingNotes: notes.length > 0 ? notes : ["No public working notes were provided."],
-    teamMessages,
-    subgoalUpdates,
-    completion,
-    rawText,
-  };
-}
-
-function repairMalformedResponseJson(payloadText: string): string {
-  return payloadText
-    .replace(/,\\"([A-Za-z0-9_]+)\\":/g, ',"$1":')
-    .replace(/\{\\"([A-Za-z0-9_]+)\\":/g, '{"$1":')
-    .replace(/:\\"([^"\\]*(?:\\.[^"\\]*)*)\\"(?=\s*[,}\]])/g, ':"$1"')
-    .replace(/\[\\"/g, '["')
-    .replace(/\\",\\"/g, '","')
-    .replace(/\\"\]/g, '"]')
-    .replace(/,\s*([}\]])/g, "$1");
-}
-
-export function parseAgentTurnResult(rawText: string): AgentTurnResult {
-  const match = [...rawText.matchAll(/<codex_research_team-response>([\s\S]*?)<\/codex_research_team-response>/g)].at(-1);
-  const payloadText = match?.[1]?.trim() ?? "";
-  if (!payloadText) {
-    return {
-      shouldReply: false,
-      workingNotes: ["Structured response was missing."],
-      teamMessages: [],
-      subgoalUpdates: [],
-      completion: "continue",
-      rawText,
-    };
-  }
-
-  try {
-    const parsed = JSON.parse(payloadText) as Partial<AgentTurnResult> & { teamMessage?: string; targetAgentId?: string | null; targetAgentIds?: string[] | null };
-    return normalizeParsedTurnResult(parsed, rawText);
-  } catch (error) {
+  private async terminateProcessTree(currentProcess: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<void> {
+    let settled = false;
+    const waitForExit = new Promise<void>((resolve) => {
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve();
+      };
+      currentProcess.once("exit", finish);
+      currentProcess.once("close", finish);
+    });
     try {
-      const repairedPayload = repairMalformedResponseJson(payloadText);
-      const parsed = JSON.parse(repairedPayload) as Partial<AgentTurnResult> & { teamMessage?: string; targetAgentId?: string | null; targetAgentIds?: string[] | null };
-      const normalized = normalizeParsedTurnResult(parsed, rawText);
-      normalized.workingNotes = [
-        ...normalized.workingNotes,
-        "Recovered from a malformed structured response.",
-      ];
-      return normalized;
+      if (process.platform === "win32" && currentProcess.pid) {
+        try {
+          execFileSync("taskkill", ["/PID", String(currentProcess.pid), "/T", "/F"], {
+            stdio: "ignore",
+            windowsHide: true,
+          });
+        } catch {
+          try {
+            currentProcess.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+        }
+      } else {
+        currentProcess.kill("SIGKILL");
+      }
     } catch {
-      // fall through to non-fatal parse failure
+      // ignore
     }
-    return {
-      shouldReply: false,
-      workingNotes: [`Response JSON parse failed: ${(error as Error).message}`],
-      teamMessages: [],
-      subgoalUpdates: [],
-      completion: "continue",
-      rawText,
-    };
+    await Promise.race([
+      waitForExit,
+      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
   }
 }

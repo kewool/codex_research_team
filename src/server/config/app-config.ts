@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { dirname, resolve } from "node:path";
-import { AgentPolicy, AgentPreset, AppConfig, AppDefaults, SessionChannel, SUBGOAL_STAGES, SubgoalStage } from "../shared/types";
-import { ensureDir, projectPath, readJson, writeJson } from "./utils";
+import { AgentPolicy, AgentPreset, AppConfig, AppDefaults, SessionChannel, SUBGOAL_STAGES, SubgoalStage } from "../../shared/types";
+import { ensureDir, projectPath, readJson, writeJson } from "../lib/utils";
 
 export const DEFAULT_CONFIG_PATH = projectPath("codex_research_team.config.json");
 export const INTERNAL_CHANNELS: SessionChannel[] = ["status", "system", "control"];

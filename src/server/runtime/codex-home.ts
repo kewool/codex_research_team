@@ -3,8 +3,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { AppConfig, CodexAuthStatus } from "../shared/types";
-import { ensureDir, timestampSlug } from "./utils";
+import { AppConfig, CodexAuthStatus } from "../../shared/types";
+import { ensureDir, timestampSlug } from "../lib/utils";
 
 const AUTH_ARTIFACTS = [
   "auth.json",

@@ -3,10 +3,10 @@ import { createReadStream, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, resolve } from "node:path";
 import { URL } from "node:url";
-import { DEFAULT_CONFIG_PATH } from "./config";
-import { SessionManager } from "./session-manager";
-import { loadAgentHistoryPage, loadSessionEventPage } from "./storage";
-import { launchCodexLogin, loadCodexAuthStatus, logoutCodexHome } from "./codex-home";
+import { DEFAULT_CONFIG_PATH } from "../config/app-config";
+import { SessionManager } from "../session/session-manager";
+import { loadAgentHistoryPage, loadSessionEventPage } from "../persistence/storage";
+import { launchCodexLogin, loadCodexAuthStatus, logoutCodexHome } from "../runtime/codex-home";
 
 function sendJson(response: any, statusCode: number, payload: unknown): void {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
@@ -43,6 +43,15 @@ function serveStatic(response: any, filePath: string): void {
   };
   response.writeHead(200, { "content-type": contentTypes[extname(filePath)] ?? "application/octet-stream" });
   createReadStream(filePath).pipe(response);
+}
+
+function resolvePublicFile(pathname: string): string | null {
+  const publicRoot = resolve(process.cwd(), "public");
+  const requestedPath = resolve(publicRoot, pathname.replace(/^\/+/, ""));
+  if (!requestedPath.startsWith(publicRoot)) {
+    return null;
+  }
+  return requestedPath;
 }
 
 function isAppRoute(pathname: string): boolean {
@@ -258,8 +267,13 @@ export async function startWebServer(options?: { configPath?: string; host?: str
         return;
       }
 
-      if (request.method === "GET" && pathname === "/app.js") {
-        serveStatic(response, resolve(process.cwd(), "dist", "client", "app.js"));
+      if (request.method === "GET" && (pathname === "/app.js" || /^\/app\/.+\.js$/.test(pathname))) {
+        const filePath = resolvePublicFile(pathname);
+        if (!filePath) {
+          sendText(response, 404, "Not found");
+          return;
+        }
+        serveStatic(response, filePath);
         return;
       }
       if (request.method === "GET" && pathname === "/styles.css") {

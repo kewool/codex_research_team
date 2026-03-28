@@ -3,10 +3,10 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { startWebServer } from "./server/server";
+import { startWebServer } from "./server/http/web-server";
 import { AppConfig, AgentPreset } from "./shared/types";
-import { DEFAULT_CONFIG_PATH, createDefaultConfig, defaultListenChannels, defaultPublishChannel, emptyAgentPolicy, loadConfig, saveConfig } from "./server/config";
-import { slugify } from "./server/utils";
+import { DEFAULT_CONFIG_PATH, createDefaultConfig, defaultListenChannels, defaultPublishChannel, emptyAgentPolicy, loadConfig, saveConfig } from "./server/config/app-config";
+import { slugify } from "./server/lib/utils";
 
 function parseArgs(argv: string[]): { command: string; flags: Map<string, string | boolean> } {
   const [command = "serve", ...rest] = argv;

@@ -1,8 +1,8 @@
 ﻿// @ts-nocheck
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { AgentHistoryEntry, AgentHistoryKind, AgentSnapshot, AppConfig, HistoryPage, SessionEvent, SessionSnapshot } from "../shared/types";
-import { appendLine, ensureDir, readJson, slugify, tailText, timestampSlug, writeJson } from "./utils";
+import { AgentHistoryEntry, AgentHistoryKind, AgentSnapshot, AppConfig, HistoryPage, SessionEvent, SessionSnapshot } from "../../shared/types";
+import { appendLine, ensureDir, readJson, slugify, tailText, timestampSlug, writeJson } from "../lib/utils";
 
 export interface SessionFiles {
   root: string;

@@ -19,4 +19,12 @@ const result = spawnSync(process.execPath, [compiler, "-p", join(process.cwd(), 
   stdio: "inherit",
 });
 
-process.exit(result.status ?? 1);
+if ((result.status ?? 1) !== 0 || args.includes("--noEmit")) {
+  process.exit(result.status ?? 1);
+}
+
+const clientBuild = spawnSync(process.execPath, [join(process.cwd(), "scripts", "build-client-esm.mjs")], {
+  stdio: "inherit",
+});
+
+process.exit(clientBuild.status ?? 1);

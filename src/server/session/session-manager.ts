@@ -1,14 +1,14 @@
 ﻿// @ts-nocheck
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { AppConfig, RootSnapshot, StartSessionRequest, SUBGOAL_STAGES } from "../shared/types";
-import { defaultListenChannels, defaultPublishChannel, emptyAgentPolicy, loadConfig, normalizeAgentPolicy, normalizeDefaults, saveConfig } from "./config";
-import { loadSavedSession, loadSavedSessions, openSessionFiles, resolveSessionRoot } from "./storage";
-import { slugify } from "./utils";
-import { LiveSession } from "./session";
-import { loadCodexMcpCatalog, loadCodexModelCatalog, loadCodexUsageStatus } from "./model-catalog";
-import { ensureCodexWorkspaceTrust } from "./codex-trust";
-import { effectiveCodexHomeDir, loadCodexAuthStatus, syncProjectCodexHome } from "./codex-home";
+import { AppConfig, RootSnapshot, StartSessionRequest, SUBGOAL_STAGES } from "../../shared/types";
+import { defaultListenChannels, defaultPublishChannel, emptyAgentPolicy, loadConfig, normalizeAgentPolicy, normalizeDefaults, saveConfig } from "../config/app-config";
+import { loadSavedSession, loadSavedSessions, openSessionFiles, resolveSessionRoot } from "../persistence/storage";
+import { slugify } from "../lib/utils";
+import { LiveSession } from "./live-session";
+import { loadCodexMcpCatalog, loadCodexModelCatalog, loadCodexUsageStatus } from "../runtime/model-catalog";
+import { ensureCodexWorkspaceTrust } from "../runtime/codex-trust";
+import { effectiveCodexHomeDir, loadCodexAuthStatus, syncProjectCodexHome } from "../runtime/codex-home";
 
 function normalizeModelList(values: unknown[], current?: string | null): string[] {
   const deduped = new Set<string>();

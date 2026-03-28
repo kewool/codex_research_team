@@ -6,6 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "build": "node scripts/run-tsc.mjs",
+    "test": "yarn build && node scripts/run-tests.mjs",
     "serve": "node dist/cli.js serve",
     "settings": "node dist/cli.js settings",
     "workspace": "node dist/cli.js workspace",
