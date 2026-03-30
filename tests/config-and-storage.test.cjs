@@ -32,6 +32,18 @@ test("default config creates workspace and normalizes defaults", async (t) => {
   assert.equal(config.workspaces[0].name, "default");
   assert.equal(fs.existsSync(config.workspaces[0].path), true);
   assert.equal(config.defaults.sandbox, "danger-full-access");
+  assert.equal(config.defaults.modelReasoningEffort, "high");
+  assert.deepEqual(
+    config.agents.map((agent) => [agent.id, agent.modelReasoningEffort]),
+    [
+      ["researcher_1", "medium"],
+      ["researcher_2", "medium"],
+      ["researcher_3", "medium"],
+      ["coordinator_1", "high"],
+      ["implementer_1", "high"],
+      ["reviewer_1", "high"],
+    ],
+  );
 
   const normalized = normalizeDefaults({
     codexHomeMode: "project",
@@ -109,6 +121,7 @@ test("storage paginates session events, agent history, and saved snapshots", asy
     brief: "brief",
     publishChannel: "research",
     model: null,
+    modelReasoningEffort: null,
     status: "idle",
     turnCount: 0,
     lastConsumedSequence: 0,

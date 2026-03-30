@@ -25,6 +25,17 @@ function normalizeModelList(values: unknown[], current?: string | null): string[
   return [...deduped];
 }
 
+export function canAutoResumeSessionSnapshot(snapshot: any): boolean {
+  if (!snapshot || String(snapshot.status || "").toLowerCase() !== "idle") {
+    return false;
+  }
+  const agents = Array.isArray(snapshot.agents) ? snapshot.agents : [];
+  if (agents.length === 0) {
+    return false;
+  }
+  return agents.every((agent) => String(agent?.status || "").toLowerCase() === "idle");
+}
+
 export class SessionManager {
   readonly configPath: string;
   config: AppConfig;
@@ -106,6 +117,18 @@ export class SessionManager {
     return session;
   }
 
+  async getOrAutoResumeIdleSession(id: string): Promise<LiveSession | null> {
+    const active = this.getSession(id);
+    if (active) {
+      return active;
+    }
+    const snapshot = loadSavedSession(resolveSessionRoot(this.config, id));
+    if (!canAutoResumeSessionSnapshot(snapshot)) {
+      return null;
+    }
+    return this.resumeSession(id);
+  }
+
   getSession(id: string): LiveSession | null {
     return this.activeSessions.get(id) ?? null;
   }
@@ -116,6 +139,15 @@ export class SessionManager {
       throw new Error(`Unknown session: ${id}`);
     }
     await session.stop();
+    this.activeSessions.delete(id);
+  }
+
+  async hibernateSession(id: string): Promise<void> {
+    const session = this.getSession(id);
+    if (!session) {
+      throw new Error(`Unknown session: ${id}`);
+    }
+    await session.hibernate();
     this.activeSessions.delete(id);
   }
 
@@ -179,8 +211,11 @@ export class SessionManager {
 
     if (this.config.defaults.codexHomeMode === "project") {
       mkdirSync(resolve(this.config.defaults.codexHomeDir), { recursive: true });
+      const switchedToSeparate = previousDefaults.codexAuthMode !== "separate" && this.config.defaults.codexAuthMode === "separate";
+      const switchedAwayFromSeparate = previousDefaults.codexAuthMode === "separate" && this.config.defaults.codexAuthMode !== "separate";
       syncProjectCodexHome(this.config, {
-        clearProjectAuth: previousDefaults.codexAuthMode !== "separate" && this.config.defaults.codexAuthMode === "separate",
+        preserveProjectAuth: switchedAwayFromSeparate,
+        restoreSeparateAuth: switchedToSeparate,
       });
     }
 

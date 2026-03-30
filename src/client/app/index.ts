@@ -512,7 +512,7 @@ function bindSessionStream(): void {
     return;
   }
   const session = currentSession();
-  if (!session || session.status === "stopped") {
+  if (!session || !session.isLive || session.status === "stopped") {
     return;
   }
   const sessionId = session.id;
@@ -933,8 +933,6 @@ window.addEventListener("scroll", () => {
 window.addEventListener("DOMContentLoaded", () => {
   void withGuard(refreshState());
 });
-
-
 
 
 

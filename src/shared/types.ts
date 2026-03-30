@@ -36,6 +36,7 @@ export interface AgentPreset {
   listenChannels: SessionChannel[];
   maxTurns: number;
   model: string | null;
+  modelReasoningEffort: string | null;
   policy: AgentPolicy;
 }
 
@@ -168,6 +169,7 @@ export interface AgentSnapshot {
   brief: string;
   publishChannel: SessionChannel;
   model: string | null;
+  modelReasoningEffort: string | null;
   status: AgentStatus;
   turnCount: number;
   lastConsumedSequence: number;
@@ -229,6 +231,7 @@ export interface CodexAuthStatus {
   codexHomeMode: "project" | "global";
   codexAuthMode: "mirror-global" | "separate";
   loggedIn: boolean;
+  email: string | null;
   summary: string;
   rawOutput: string;
   lastCheckedAt: string;
@@ -246,6 +249,7 @@ export interface CodexUsageStatus {
   sourceFile: string | null;
   observedAt: string | null;
   available: boolean;
+  staleReason: string | null;
   planType: string | null;
   limitId: string | null;
   limitName: string | null;

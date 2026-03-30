@@ -16,6 +16,7 @@ export function createSessionActionTools(deps) {
             body: JSON.stringify({ channel, text, targetAgentId }),
         });
         upsertSession(payload.session);
+        bindSessionStream();
         qs("#session-command").value = "";
         clearFlash();
         render();

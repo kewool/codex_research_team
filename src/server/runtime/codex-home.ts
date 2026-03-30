@@ -12,6 +12,7 @@ const AUTH_ARTIFACTS = [
   "internal_storage.json",
   ".codex-global-state.json",
 ];
+const PROJECT_AUTH_BACKUP_DIR = ".separate-auth-backup";
 
 const SHARED_RUNTIME_FILES = [
   "version.json",
@@ -27,6 +28,42 @@ function readText(path: string): string {
   } catch {
     return "";
   }
+}
+
+function readJsonIfPresent(path: string): any | null {
+  if (!existsSync(path)) {
+    return null;
+  }
+  try {
+    return JSON.parse(readText(path));
+  } catch {
+    return null;
+  }
+}
+
+function decodeJwtPayload(token: unknown): any | null {
+  const text = String(token ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  const parts = text.split(".");
+  if (parts.length < 2) {
+    return null;
+  }
+  try {
+    const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
+    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function readCodexAuthEmail(homeDir: string): string | null {
+  const auth = readJsonIfPresent(join(homeDir, "auth.json"));
+  const payload = decodeJwtPayload(auth?.tokens?.id_token);
+  const email = String(payload?.email ?? "").trim();
+  return email || null;
 }
 
 function splitTomlSections(raw: string): Array<{ name: string; text: string }> {
@@ -178,6 +215,30 @@ export function clearProjectAuthArtifacts(homeDir: string): void {
   }
 }
 
+export function backupProjectAuthArtifacts(homeDir: string): string {
+  const backupDir = join(homeDir, PROJECT_AUTH_BACKUP_DIR);
+  ensureDir(backupDir);
+  for (const fileName of AUTH_ARTIFACTS) {
+    removePathIfPresent(join(backupDir, fileName));
+    copyFileIfPresent(join(homeDir, fileName), join(backupDir, fileName));
+  }
+  return backupDir;
+}
+
+export function restoreProjectAuthArtifacts(homeDir: string): boolean {
+  const backupDir = join(homeDir, PROJECT_AUTH_BACKUP_DIR);
+  let restored = false;
+  for (const fileName of AUTH_ARTIFACTS) {
+    const backupPath = join(backupDir, fileName);
+    if (!existsSync(backupPath)) {
+      continue;
+    }
+    copyFileIfPresent(backupPath, join(homeDir, fileName));
+    restored = true;
+  }
+  return restored;
+}
+
 function codexCommand(config: AppConfig): string {
   return String(config.defaults.codexCommand || "codex").trim() || "codex";
 }
@@ -255,6 +316,7 @@ export function loadCodexAuthStatus(config: AppConfig): CodexAuthStatus {
   const result = runCodexCommandSync(config, homeDir, ["login", "status"]);
   const rawOutput = [result.stdout, result.stderr, result.errorMessage].filter(Boolean).join("\n").trim();
   const loggedIn = result.ok && /logged in/i.test(rawOutput || "");
+  const email = loggedIn ? readCodexAuthEmail(homeDir) : null;
   const summary = rawOutput
     ? `${authSummaryPrefix(config)}: ${rawOutput}`
     : `${authSummaryPrefix(config)}: ${loggedIn ? "logged in" : "not logged in"}`;
@@ -263,6 +325,7 @@ export function loadCodexAuthStatus(config: AppConfig): CodexAuthStatus {
     codexHomeMode: config.defaults.codexHomeMode,
     codexAuthMode: config.defaults.codexAuthMode,
     loggedIn,
+    email,
     summary,
     rawOutput,
     lastCheckedAt: new Date().toISOString(),
@@ -330,17 +393,23 @@ export function logoutCodexHome(config: AppConfig): CodexAuthStatus {
   return loadCodexAuthStatus(config);
 }
 
-export function syncProjectCodexHome(config: AppConfig, options?: { clearProjectAuth?: boolean }): string {
+export function syncProjectCodexHome(config: AppConfig, options?: { preserveProjectAuth?: boolean; restoreSeparateAuth?: boolean }): string {
   const homeDir = effectiveCodexHomeDir(config);
   if (config.defaults.codexHomeMode !== "project") {
     return homeDir;
   }
 
   ensureDir(homeDir);
-  if (options?.clearProjectAuth) {
+  if (options?.preserveProjectAuth) {
+    backupProjectAuthArtifacts(homeDir);
+  }
+  if (config.defaults.codexAuthMode !== "separate") {
     clearProjectAuthArtifacts(homeDir);
   }
   syncProjectRuntimeAssets(homeDir, { mirrorAuth: config.defaults.codexAuthMode !== "separate" });
+  if (options?.restoreSeparateAuth && config.defaults.codexAuthMode === "separate") {
+    restoreProjectAuthArtifacts(homeDir);
+  }
   const configPath = join(homeDir, "config.toml");
   const globalConfigText = readText(join(globalCodexHomeDir(), "config.toml"));
   const existingConfigText = readText(configPath);

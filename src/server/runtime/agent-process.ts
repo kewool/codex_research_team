@@ -508,6 +508,7 @@ export class CodexAgentProcess {
 
   private buildCommandSpec(): { file: string; args: string[]; windowsVerbatimArguments: boolean; shell: boolean } {
     const effectiveModel = this.agent.model ?? this.config.defaults.model;
+    const effectiveReasoningEffort = this.agent.modelReasoningEffort ?? this.config.defaults.modelReasoningEffort;
 
     const codexArgs: string[] = [];
     if (!this.config.defaults.dangerousBypass) {
@@ -518,8 +519,8 @@ export class CodexAgentProcess {
       codexArgs.push("-m", effectiveModel);
     }
     codexArgs.push("-c", `web_search=\"${this.config.defaults.search ? "live" : "disabled"}\"`);
-    if (this.config.defaults.modelReasoningEffort) {
-      codexArgs.push("-c", `model_reasoning_effort=\"${this.config.defaults.modelReasoningEffort}\"`);
+    if (effectiveReasoningEffort) {
+      codexArgs.push("-c", `model_reasoning_effort=\"${effectiveReasoningEffort}\"`);
     }
     if (this.config.defaults.dangerousBypass) {
       codexArgs.push("--dangerously-bypass-approvals-and-sandbox");

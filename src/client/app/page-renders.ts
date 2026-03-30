@@ -60,7 +60,9 @@ export function createPageRenderers(deps: {
     const value = available ? formatRemainingPercent(window?.usedPercent) : "--";
     const note = available
       ? `${formatPercent(window?.usedPercent)} used - ${formatLimitReset(window?.resetsAt)}`
-      : "No recent quota data";
+      : status?.staleReason === "auth_changed"
+        ? "Awaiting quota data for the current login"
+        : "No recent quota data";
     return `
       <article class="metric-card panel">
         <span class="metric-label">${escapeHtml(label)}</span>
@@ -288,6 +290,7 @@ export function createPageRenderers(deps: {
     const authControlsLocked = Boolean(authStatus?.controlsLocked);
     const authStatusText = authStatus?.summary || "Codex login status has not been checked yet.";
     const authStatusRaw = authStatus?.rawOutput || "No additional login output.";
+    const authEmail = String(authStatus?.email || "").trim();
     const authStatusPill = authStatus?.loggedIn ? "logged in" : "not logged in";
     const authActionLabel = authStatus?.loggedIn ? "Switch Login" : "Open Login";
     const agentRows = (config.agents || []).map((agent: AnyObject, index: number) => `
@@ -325,6 +328,13 @@ export function createPageRenderers(deps: {
             ${renderLabel("Model", "Optional per-agent model override. Leave empty to use the runtime default.")}
             ${renderModelSelect(`data-agent-model="${index}"`, options, agent.model, "Use default model")}
           </label>
+        </div>
+        <div class="two-col-grid">
+          <label>
+            ${renderLabel("Reasoning Effort", "Optional per-agent reasoning effort override. Leave empty to use the runtime default.")}
+            ${renderReasoningEffortSelect(`data-agent-reasoning-effort="${index}"`, reasoningOptions, agent.modelReasoningEffort, "Use default reasoning effort")}
+          </label>
+          <div></div>
         </div>
         <label class="check-line">
           <input data-agent-force-broadcast="${index}" type="checkbox" ${agent.policy?.forceBroadcastOnFirstTurn ? "checked" : ""} />
@@ -407,6 +417,7 @@ export function createPageRenderers(deps: {
                 <span class="status-pill ${authStatus?.loggedIn ? "idle" : "stopped"}">${escapeHtml(authStatusPill)}</span>
                 <span>${escapeHtml(String(authStatus?.codexHomeDir || config.defaults.codexHomeDir || ""))}</span>
               </div>
+              ${authEmail ? `<p class="muted">Signed in as ${escapeHtml(authEmail)}</p>` : ``}
               ${authControlsLocked ? `<p class="muted">Project auth is currently mirroring the global Codex login. Switch Auth Mode to Separate to log in independently.</p>` : ""}
               <pre>${escapeHtml(authStatusRaw)}</pre>
             </div>

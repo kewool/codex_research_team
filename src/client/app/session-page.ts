@@ -302,7 +302,7 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
     const waiting = agents.filter((agent) => agent.waitingForInput).length;
     const errors = agents.filter((agent) => agent.status === "error").length;
     const done = agents.filter((agent) => agent.completion === "done").length;
-    const isResumable = !Boolean(session.isLive);
+    const requiresManualResume = !Boolean(session.isLive) && session.status !== "idle";
     const targetOptions = [`<option value="">All agents</option>`, ...agents.map((agent) => `<option value="${escapeHtml(agent.id)}">${escapeHtml(agent.name)}</option>`)].join("");
 
     return `
@@ -353,16 +353,16 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
         <div class="command-layout">
           <label class="command-editor">
             ${renderLabel("Command", "Replace the session goal or send a follow-up instruction into the room.")}
-            <textarea id="session-command" placeholder="${isResumable ? "Resume this session to send new instructions" : "Enter a new goal or an additional instruction"}" ${isResumable ? "disabled" : ""}></textarea>
+            <textarea id="session-command" placeholder="${requiresManualResume ? "Resume this session to send new instructions" : "Enter a new goal or an additional instruction"}" ${requiresManualResume ? "disabled" : ""}></textarea>
           </label>
           <div class="command-controls">
             <label>
               ${renderLabel("Instruction Target", "Leave empty to broadcast to the room. Pick one agent to send a direct operator instruction.")}
-              <select id="session-target" ${isResumable ? "disabled" : ""}>${targetOptions}</select>
+              <select id="session-target" ${requiresManualResume ? "disabled" : ""}>${targetOptions}</select>
             </label>
-            <button id="session-send-goal" class="primary" ${isResumable ? "disabled" : ""}>Replace Goal</button>
-            <button id="session-send-operator" ${isResumable ? "disabled" : ""}>Send Instruction</button>
-            ${isResumable ? `<button id="session-resume" class="primary">Resume Session</button>` : `<button id="session-stop" class="ghost danger">Stop Session</button>`}
+            <button id="session-send-goal" class="primary" ${requiresManualResume ? "disabled" : ""}>Replace Goal</button>
+            <button id="session-send-operator" ${requiresManualResume ? "disabled" : ""}>Send Instruction</button>
+            ${requiresManualResume ? `<button id="session-resume" class="primary">Resume Session</button>` : (session.isLive ? `<button id="session-stop" class="ghost danger">Stop Session</button>` : ``)}
           </div>
         </div>
       </section>

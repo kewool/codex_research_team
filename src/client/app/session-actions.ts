@@ -59,6 +59,7 @@ export function createSessionActionTools(deps: SessionActionDeps) {
       body: JSON.stringify({ channel, text, targetAgentId }),
     });
     upsertSession(payload.session);
+    bindSessionStream();
     qs<HTMLTextAreaElement>("#session-command").value = "";
     clearFlash();
     render();

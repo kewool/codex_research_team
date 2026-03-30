@@ -48,7 +48,7 @@ test("routing and state signatures are stable across ordering", () => {
   assert.match(state, /sg-2:building:resolved:implementer_1:Implement/);
 });
 
-test("status, research, coordination, and conflict dedupe use recent event metadata", () => {
+test("status, coordination, and conflict dedupe use recent event metadata", () => {
   const session = createSessionFixture();
   const researcher = session.agents.get("researcher_1");
   const coordinator = session.agents.get("coordinator_1");
@@ -65,20 +65,9 @@ test("status, research, coordination, and conflict dedupe use recent event metad
   });
   assert.equal(signatures.shouldSuppressDuplicateStatusEvent(session, researcher, statusSignature), true);
 
-  const researchSignature = signatures.researchNoteSignature(session, researcher, ["sg-1"], ["coordinator_1"]);
-  session.recentEvents.push({
-    sequence: 2,
-    timestamp: "2026-03-28T00:00:02.000Z",
-    sender: researcher.preset.name,
-    channel: researcher.preset.publishChannel,
-    content: "same note",
-    metadata: { researchNoteSignature: researchSignature },
-  });
-  assert.equal(signatures.shouldSuppressRepeatedResearchNote(session, researcher, ["sg-1"], ["coordinator_1"], false), true);
-
   const routingSignature = signatures.coordinationRoutingSignature(session, ["sg-1"], ["implementer_1"]);
   session.recentEvents.push({
-    sequence: 3,
+    sequence: 2,
     timestamp: "2026-03-28T00:00:03.000Z",
     sender: coordinator.preset.name,
     channel: coordinator.preset.publishChannel,
@@ -88,14 +77,14 @@ test("status, research, coordination, and conflict dedupe use recent event metad
   assert.equal(signatures.shouldSuppressDuplicateCoordinationTurn(session, coordinator, ["sg-1"], ["implementer_1"]), true);
 
   const burstSignature = signatures.conflictBurstSignature([{
-    reason: "stale_update",
+    reason: "reopen_suggestion",
     subgoalId: "sg-1",
     agentId: "researcher_2",
     currentStage: "researching",
     currentAssigneeAgentId: null,
   }], ["coordinator_1"]);
   session.recentEvents.push({
-    sequence: 4,
+    sequence: 3,
     timestamp: "2026-03-28T00:00:04.000Z",
     sender: "system",
     channel: session.operatorChannel(),

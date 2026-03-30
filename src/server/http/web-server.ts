@@ -92,6 +92,21 @@ export async function startWebServer(options?: { configPath?: string; host?: str
     sseBySession.delete(sessionId);
   };
 
+  const getInteractiveSession = async (sessionId: string, options?: { autoResumeIdle?: boolean }): Promise<any | null> => {
+    const live = manager.getSession(sessionId);
+    if (live) {
+      return live;
+    }
+    if (!options?.autoResumeIdle) {
+      return null;
+    }
+    const resumed = await manager.getOrAutoResumeIdleSession(sessionId);
+    if (resumed) {
+      attachSession(resumed);
+    }
+    return resumed;
+  };
+
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? `${host}:${port}`}`);
@@ -104,19 +119,36 @@ export async function startWebServer(options?: { configPath?: string; host?: str
 
       if (request.method === "POST" && pathname === "/api/config") {
         const next = await readBody(request);
-        sendJson(response, 200, { config: manager.updateConfig(next), codexAuthStatus: loadCodexAuthStatus(manager.config) });
+        manager.updateConfig(next);
+        const root = manager.snapshot();
+        sendJson(response, 200, {
+          config: root.config,
+          codexAuthStatus: root.codexAuthStatus,
+          codexUsageStatus: root.codexUsageStatus,
+        });
         return;
       }
 
       if (request.method === "POST" && pathname === "/api/codex-auth/login") {
         const result = launchCodexLogin(manager.config);
-        sendJson(response, 200, { ok: true, ...result, codexAuthStatus: loadCodexAuthStatus(manager.config) });
+        const root = manager.snapshot();
+        sendJson(response, 200, {
+          ok: true,
+          ...result,
+          codexAuthStatus: root.codexAuthStatus,
+          codexUsageStatus: root.codexUsageStatus,
+        });
         return;
       }
 
       if (request.method === "POST" && pathname === "/api/codex-auth/logout") {
-        const authStatus = logoutCodexHome(manager.config);
-        sendJson(response, 200, { ok: true, codexAuthStatus: authStatus });
+        logoutCodexHome(manager.config);
+        const root = manager.snapshot();
+        sendJson(response, 200, {
+          ok: true,
+          codexAuthStatus: root.codexAuthStatus,
+          codexUsageStatus: root.codexUsageStatus,
+        });
         return;
       }
 
@@ -176,7 +208,7 @@ export async function startWebServer(options?: { configPath?: string; host?: str
       const eventsMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/events$/);
       if (request.method === "GET" && eventsMatch) {
         const sessionId = decodeURIComponent(eventsMatch[1]);
-        const session = manager.getSession(sessionId);
+        const session = await getInteractiveSession(sessionId, { autoResumeIdle: false });
         if (!session) {
           sendJson(response, 404, { error: "Session not active." });
           return;
@@ -201,7 +233,7 @@ export async function startWebServer(options?: { configPath?: string; host?: str
 
       const instructionMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/instructions$/);
       if (request.method === "POST" && instructionMatch) {
-        const session = manager.getSession(decodeURIComponent(instructionMatch[1]));
+        const session = await getInteractiveSession(decodeURIComponent(instructionMatch[1]), { autoResumeIdle: true });
         if (!session) {
           sendJson(response, 404, { error: "Session not active." });
           return;
@@ -218,7 +250,7 @@ export async function startWebServer(options?: { configPath?: string; host?: str
 
       const inputMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/inputs$/);
       if (request.method === "POST" && inputMatch) {
-        const session = manager.getSession(decodeURIComponent(inputMatch[1]));
+        const session = await getInteractiveSession(decodeURIComponent(inputMatch[1]), { autoResumeIdle: true });
         if (!session) {
           sendJson(response, 404, { error: "Session not active." });
           return;
@@ -299,7 +331,7 @@ export async function startWebServer(options?: { configPath?: string; host?: str
       for (const session of [...manager.snapshot().sessions]) {
         const live = manager.getSession(session.id);
         if (live) {
-          await manager.stopSession(session.id);
+          await manager.hibernateSession(session.id);
           detachSession(session.id);
         }
       }

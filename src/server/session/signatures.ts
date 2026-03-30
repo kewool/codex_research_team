@@ -76,43 +76,17 @@ export function shouldSuppressDuplicateStatusEvent(session: any, agent: any, sig
   return false;
 }
 
-export function researchNoteSignature(session: any, agent: any, subgoalIds: string[], targetAgentIds: string[]): string | null {
-  if (!session.isDiscoveryOwner(agent.preset.id)) {
-    return null;
-  }
-  const stateSignature = subgoalStateSignature(session, subgoalIds);
-  if (!stateSignature) {
-    return null;
-  }
-  const normalizedTargets = [...new Set(targetAgentIds.map((value) => String(value ?? "").trim()).filter(Boolean))].sort();
-  return `${agent.preset.id}|targets=${normalizedTargets.join(",") || "-"}|subgoals=${stateSignature}`;
+export function researchNoteSignature(_session: any, _agent: any, _subgoalIds: string[], _targetAgentIds: string[]): string | null {
+  return null;
 }
 
 export function shouldSuppressRepeatedResearchNote(
-  session: any,
-  agent: any,
-  subgoalIds: string[],
-  targetAgentIds: string[],
-  hasActualStateChange: boolean,
+  _session: any,
+  _agent: any,
+  _subgoalIds: string[],
+  _targetAgentIds: string[],
+  _hasActualStateChange: boolean,
 ): boolean {
-  if (hasActualStateChange || !session.isDiscoveryOwner(agent.preset.id)) {
-    return false;
-  }
-  const signature = researchNoteSignature(session, agent, subgoalIds, targetAgentIds);
-  if (!signature) {
-    return false;
-  }
-  for (let index = session.recentEvents.length - 1; index >= 0; index -= 1) {
-    const event = session.recentEvents[index];
-    if (event.sender !== agent.preset.name || event.channel !== agent.preset.publishChannel) {
-      continue;
-    }
-    const previousSignature = compactWhitespace(String(event.metadata?.researchNoteSignature ?? ""));
-    if (!previousSignature) {
-      return false;
-    }
-    return previousSignature === signature;
-  }
   return false;
 }
 
@@ -126,8 +100,8 @@ export function conflictBurstSignature(conflicts: any[], targetAgentIds: string[
     if (conflict.reason === "done_soft_note") {
       return "done_soft_note";
     }
-    if (conflict.reason === "done_reopen_suggestion") {
-      return "done_reopen_suggestion";
+    if (conflict.reason === "done_reopen_suggestion" || conflict.reason === "reopen_suggestion") {
+      return "reopen_suggestion";
     }
     return "active_conflict";
   }))].sort();

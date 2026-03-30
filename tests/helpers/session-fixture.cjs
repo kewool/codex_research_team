@@ -10,6 +10,7 @@ function createAgentPreset(id, ownedStages, overrides = {}) {
     listenChannels: overrides.listenChannels || ["goal", "operator", "team"],
     maxTurns: 0,
     model: null,
+    modelReasoningEffort: null,
     policy: {
       promptGuidance: [],
       ownedStages,
@@ -30,6 +31,7 @@ function createRuntimeAgent(preset, extra = {}) {
       brief: preset.brief,
       publishChannel: preset.publishChannel,
       model: preset.model,
+      modelReasoningEffort: preset.modelReasoningEffort,
       status: "idle",
       turnCount: 0,
       lastConsumedSequence: 0,

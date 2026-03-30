@@ -105,3 +105,317 @@ test("applyTurnResult writes agent history and session events without crashing",
   assert.equal(session.subgoals[0].title, "First card");
   assert.ok(session.recentEvents.some((event) => event.channel === "research"));
 });
+
+test("message-only research note to coordinator is still published when board state is unchanged", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-research-note-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  const session = new LiveSession({
+    config,
+    goal: "research note regression",
+    title: "research note regression",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+  });
+
+  session.initializeAgents();
+  session.subgoals.push({
+    id: "sg-1",
+    title: "Research topic",
+    topicKey: "research-topic",
+    summary: "Track the research topic",
+    facts: [],
+    openQuestions: [],
+    resolvedDecisions: [],
+    acceptanceCriteria: [],
+    relevantFiles: [],
+    nextAction: "Clarify evidence",
+    stage: "researching",
+    decisionState: "disputed",
+    lastReopenReason: null,
+    assigneeAgentId: null,
+    mergedIntoSubgoalId: null,
+    archivedAt: null,
+    archivedBy: null,
+    updatedAt: "2026-03-28T00:00:00.000Z",
+    updatedBy: "researcher_1",
+    revision: 1,
+    conflictCount: 0,
+    activeConflict: false,
+    lastConflictAt: null,
+    lastConflictSummary: null,
+  });
+  session.subgoalRevision = 1;
+
+  applyTurnResult(session, "researcher_1", {
+    shouldReply: true,
+    workingNotes: [],
+    teamMessages: [{
+      content: "Keep sg-1 disputed until the coordinator resolves the contract gap.",
+      targetAgentId: "coordinator_1",
+      targetAgentIds: ["coordinator_1"],
+      subgoalIds: ["sg-1"],
+    }],
+    subgoalUpdates: [],
+    completion: "continue",
+    rawText: "",
+    runtimeDiagnostics: {
+      sawFileChange: false,
+      sawPolicyWriteBlock: false,
+      sawBroadDataLoad: false,
+      sawBroadOutputDump: false,
+    },
+  }, 3, null);
+
+  const researchEvent = session.recentEvents.find((event) => event.channel === "research" && event.sender === "researcher_1");
+  assert.ok(researchEvent, "research note should be published");
+  assert.deepEqual(researchEvent.metadata?.targetAgentIds, ["coordinator_1"]);
+});
+
+test("reviewer upstream reopen becomes a coordinator-only message instead of directly reopening the card", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-reviewer-reopen-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  const session = new LiveSession({
+    config,
+    goal: "reviewer reopen regression",
+    title: "reviewer reopen regression",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+  });
+
+  session.initializeAgents();
+  session.subgoals.push({
+    id: "sg-1",
+    title: "Audit target",
+    topicKey: "audit-target",
+    summary: "Review target",
+    facts: [],
+    openQuestions: [],
+    resolvedDecisions: [],
+    acceptanceCriteria: [],
+    relevantFiles: [],
+    nextAction: "Review changes",
+    stage: "ready_for_review",
+    decisionState: "resolved",
+    lastReopenReason: null,
+    assigneeAgentId: "reviewer_1",
+    mergedIntoSubgoalId: null,
+    archivedAt: null,
+    archivedBy: null,
+    updatedAt: "2026-03-28T00:00:00.000Z",
+    updatedBy: "implementer_1",
+    revision: 2,
+    conflictCount: 0,
+    activeConflict: false,
+    lastConflictAt: null,
+    lastConflictSummary: null,
+  });
+  session.subgoalRevision = 2;
+
+  applyTurnResult(session, "reviewer_1", {
+    shouldReply: true,
+    workingNotes: [],
+    teamMessages: [],
+    subgoalUpdates: [{
+      id: "sg-1",
+      expectedRevision: 2,
+      stage: "researching",
+      decisionState: "disputed",
+      reopenReason: "missing regression coverage for the selected-side gate",
+    }],
+    completion: "continue",
+    rawText: "",
+    runtimeDiagnostics: {
+      sawFileChange: false,
+      sawPolicyWriteBlock: false,
+      sawBroadDataLoad: false,
+      sawBroadOutputDump: false,
+    },
+  }, 4, null);
+
+  assert.equal(session.subgoals[0].stage, "ready_for_review");
+  assert.equal(session.subgoals[0].decisionState, "resolved");
+  const reviewEvent = session.recentEvents.find((event) => event.channel === "review" && event.sender === "reviewer_1");
+  assert.ok(reviewEvent, "reviewer should publish a coordinator-targeted reopen suggestion");
+  assert.deepEqual(reviewEvent.metadata?.targetAgentIds, ["coordinator_1"]);
+  assert.match(reviewEvent.content, /reopening sg-1|reopen sg-1|Review suggests reopening sg-1/i);
+});
+
+test("mechanical stale conflicts target only the coordinator while reopen suggestions also target the current assignee", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-conflict-routing-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  const session = new LiveSession({
+    config,
+    goal: "conflict routing regression",
+    title: "conflict routing regression",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+  });
+
+  session.initializeAgents();
+  session.subgoals.push({
+    id: "sg-1",
+    title: "Build slice",
+    topicKey: "build-slice",
+    summary: "Active build",
+    facts: [],
+    openQuestions: [],
+    resolvedDecisions: [],
+    acceptanceCriteria: [],
+    relevantFiles: [],
+    nextAction: "Implement",
+    stage: "building",
+    decisionState: "resolved",
+    lastReopenReason: null,
+    assigneeAgentId: "implementer_1",
+    mergedIntoSubgoalId: null,
+    archivedAt: null,
+    archivedBy: null,
+    updatedAt: "2026-03-28T00:00:00.000Z",
+    updatedBy: "coordinator_1",
+    revision: 3,
+    conflictCount: 0,
+    activeConflict: false,
+    lastConflictAt: null,
+    lastConflictSummary: null,
+  });
+  session.subgoalRevision = 3;
+
+  applyTurnResult(session, "researcher_1", {
+    shouldReply: false,
+    workingNotes: [],
+    teamMessages: [],
+    subgoalUpdates: [{
+      id: "sg-1",
+      expectedRevision: 2,
+      stage: "building",
+    }],
+    completion: "continue",
+    rawText: "",
+    runtimeDiagnostics: {
+      sawFileChange: false,
+      sawPolicyWriteBlock: false,
+      sawBroadDataLoad: false,
+      sawBroadOutputDump: false,
+    },
+  }, 5, null);
+
+  const firstConflict = [...session.recentEvents].reverse().find((event) => event.sender === "system");
+  assert.deepEqual(firstConflict.metadata?.targetAgentIds, ["coordinator_1"]);
+
+  applyTurnResult(session, "researcher_1", {
+    shouldReply: false,
+    workingNotes: [],
+    teamMessages: [],
+    subgoalUpdates: [{
+      id: "sg-1",
+      expectedRevision: 2,
+      stage: "researching",
+      reopenReason: "new evidence invalidates the build assumption",
+    }],
+    completion: "continue",
+    rawText: "",
+    runtimeDiagnostics: {
+      sawFileChange: false,
+      sawPolicyWriteBlock: false,
+      sawBroadDataLoad: false,
+      sawBroadOutputDump: false,
+    },
+  }, 6, null);
+
+  const secondConflict = [...session.recentEvents].reverse().find((event) => event.sender === "system");
+  assert.deepEqual(secondConflict.metadata?.targetAgentIds, ["coordinator_1", "implementer_1"]);
+  assert.equal(secondConflict.metadata?.reopenSuggestionEvent, true);
+});
+
+test("self-originated coordinator stale conflicts still target the coordinator instead of broadcasting", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-self-conflict-routing-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  const session = new LiveSession({
+    config,
+    goal: "self conflict routing regression",
+    title: "self conflict routing regression",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+  });
+
+  session.initializeAgents();
+  session.subgoals.push({
+    id: "sg-1",
+    title: "Queued routing slice",
+    topicKey: "queued-routing-slice",
+    summary: "A coordinator-owned queued card",
+    facts: [],
+    openQuestions: [],
+    resolvedDecisions: [],
+    acceptanceCriteria: [],
+    relevantFiles: [],
+    nextAction: "Route the build slice",
+    stage: "ready_for_build",
+    decisionState: "resolved",
+    lastReopenReason: null,
+    assigneeAgentId: "coordinator_1",
+    mergedIntoSubgoalId: null,
+    archivedAt: null,
+    archivedBy: null,
+    updatedAt: "2026-03-28T00:00:00.000Z",
+    updatedBy: "researcher_1",
+    revision: 3,
+    conflictCount: 0,
+    activeConflict: false,
+    lastConflictAt: null,
+    lastConflictSummary: null,
+  });
+  session.subgoalRevision = 3;
+
+  applyTurnResult(session, "coordinator_1", {
+    shouldReply: false,
+    workingNotes: [],
+    teamMessages: [],
+    subgoalUpdates: [{
+      id: "sg-1",
+      expectedRevision: 2,
+      stage: "researching",
+      reopenReason: "administrative retry on an older board revision",
+    }],
+    completion: "continue",
+    rawText: "",
+    runtimeDiagnostics: {
+      sawFileChange: false,
+      sawPolicyWriteBlock: false,
+      sawBroadDataLoad: false,
+      sawBroadOutputDump: false,
+    },
+  }, 7, null);
+
+  const conflictEvent = [...session.recentEvents].reverse().find((event) => event.sender === "system");
+  assert.ok(conflictEvent, "expected a system conflict event");
+  assert.deepEqual(conflictEvent.metadata?.targetAgentIds, ["coordinator_1"]);
+});

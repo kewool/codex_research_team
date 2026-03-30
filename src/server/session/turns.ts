@@ -17,14 +17,78 @@ import {
   canCanonicalizeSubgoal,
   conflictBurstSignature,
   coordinationRoutingSignature,
-  researchNoteSignature,
   shouldSuppressConflictBurst,
   shouldSuppressDuplicateCoordinationTurn,
   shouldSuppressDuplicateStatusEvent,
-  shouldSuppressRepeatedResearchNote,
   statusEventSignature,
 } from "./signatures";
 import { nowIso } from "../lib/utils";
+
+function ownsOnlyReviewStage(agent: any): boolean {
+  return (
+    Array.isArray(agent?.preset?.policy?.ownedStages) &&
+    agent.preset.policy.ownedStages.length > 0 &&
+    agent.preset.policy.ownedStages.every((stage: string) => stage === "ready_for_review")
+  );
+}
+
+function rewriteReviewerReopenSuggestions(session: any, agentId: string, agent: any, result: any, rawTeamMessages: any[]): { teamMessages: any[]; subgoalUpdates: any[] } {
+  if (!ownsOnlyReviewStage(agent)) {
+    return {
+      teamMessages: rawTeamMessages,
+      subgoalUpdates: Array.isArray(result.subgoalUpdates) ? result.subgoalUpdates : [],
+    };
+  }
+  const coordinationOwnerId = session.defaultAssigneeForStage("ready_for_build") || session.defaultAssigneeForStage("blocked");
+  const retainedUpdates: any[] = [];
+  const nextMessages = [...rawTeamMessages];
+  for (const update of Array.isArray(result.subgoalUpdates) ? result.subgoalUpdates : []) {
+    const subgoalId = String(update?.id ?? "").trim();
+    const existing = subgoalId ? session.canonicalSubgoalForId(subgoalId) : null;
+    const wantsUpstreamReopen =
+      Boolean(existing) &&
+      session.isExplicitReopenUpdate(update) &&
+      String(update?.stage ?? "").trim() !== "building";
+    if (!wantsUpstreamReopen) {
+      retainedUpdates.push(update);
+      continue;
+    }
+    const reason = compactWhitespace(String(update?.reopenReason ?? update?.summary ?? "").trim()) || "review found a contract issue that needs coordination";
+    const alreadyTargetedCoordinator = nextMessages.some((message) => {
+      const targetIds = normalizeDirectedMessageTargets(message);
+      const subgoalIds = normalizeDirectedMessageSubgoalIds(message) ?? [];
+      return Boolean(coordinationOwnerId) && targetIds.includes(coordinationOwnerId) && subgoalIds.includes(existing.id);
+    });
+    if (!alreadyTargetedCoordinator) {
+      nextMessages.push({
+        content: `Review suggests reopening ${existing.id}: ${reason}`,
+        ...(coordinationOwnerId ? { targetAgentId: coordinationOwnerId, targetAgentIds: [coordinationOwnerId] } : { targetAgentIds: [] }),
+        subgoalIds: [existing.id],
+      });
+      result.shouldReply = true;
+    }
+  }
+  return { teamMessages: nextMessages, subgoalUpdates: retainedUpdates };
+}
+
+function conflictTargetIds(session: any, conflict: any, sourceAgentId: string): string[] {
+  const coordinatorId = session.defaultAssigneeForStage("ready_for_build") || session.defaultAssigneeForStage("blocked");
+  const targets = new Set<string>();
+  if (conflict.reason === "stale_update" || conflict.reason === "obsolete_turn") {
+    if (coordinatorId && session.agents.has(coordinatorId)) {
+      targets.add(coordinatorId);
+    }
+  } else if (conflict.reason === "reopen_suggestion" || conflict.reason === "done_reopen_suggestion") {
+    if (coordinatorId && session.agents.has(coordinatorId)) {
+      targets.add(coordinatorId);
+    }
+    const assigneeId = String(conflict.currentAssigneeAgentId ?? "").trim();
+    if (assigneeId && session.agents.has(assigneeId)) {
+      targets.add(assigneeId);
+    }
+  }
+  return [...targets];
+}
 
 export async function drainAgent(session: any, agentId: string): Promise<void> {
   const agent = session.agents.get(agentId);
@@ -128,6 +192,23 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
   }
   agent.retryCount = 0;
   const normalizedResult = result;
+  const parsedRawTeamMessages = Array.isArray(normalizedResult.teamMessages)
+    ? normalizedResult.teamMessages
+        .filter((message) => message && typeof message === "object")
+        .map((message) => {
+          const explicitSubgoalIds = normalizeDirectedMessageSubgoalIds(message);
+          return {
+            content: compactWhitespace(message.content || ""),
+            targetAgentId: String(message.targetAgentId ?? "").trim() || null,
+            targetAgentIds: normalizeDirectedMessageTargets(message),
+            ...(explicitSubgoalIds !== null ? { subgoalIds: explicitSubgoalIds } : {}),
+          };
+        })
+        .filter((message) => message.content)
+    : [];
+  const reviewerReopenRewrite = rewriteReviewerReopenSuggestions(session, agentId, agent, normalizedResult, parsedRawTeamMessages);
+  const rawTeamMessages = reviewerReopenRewrite.teamMessages;
+  normalizedResult.subgoalUpdates = reviewerReopenRewrite.subgoalUpdates;
   const obsoleteConflicts = session.buildObsoleteTurnConflicts(agentId, inFlightSubgoalRefs);
   const hasRequestedStateMutation = Array.isArray(normalizedResult.subgoalUpdates) && normalizedResult.subgoalUpdates.length > 0;
   const hasMeaningfulTurnOutput =
@@ -156,20 +237,6 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
   if (!shouldSuppressObsoleteTurn) {
     agent.snapshot.lastSeenSubgoalRevision = session.subgoalRevision;
   }
-  const rawTeamMessages = Array.isArray(normalizedResult.teamMessages)
-    ? normalizedResult.teamMessages
-        .filter((message) => message && typeof message === "object")
-        .map((message) => {
-          const explicitSubgoalIds = normalizeDirectedMessageSubgoalIds(message);
-          return {
-            content: compactWhitespace(message.content || ""),
-            targetAgentId: String(message.targetAgentId ?? "").trim() || null,
-            targetAgentIds: normalizeDirectedMessageTargets(message),
-            ...(explicitSubgoalIds !== null ? { subgoalIds: explicitSubgoalIds } : {}),
-          };
-        })
-        .filter((message) => message.content)
-    : [];
   const allowedTargetSet = new Set(
     (Array.isArray(agent.preset.policy.allowedTargetAgentIds) ? agent.preset.policy.allowedTargetAgentIds : [])
       .map((value) => String(value ?? "").trim())
@@ -250,8 +317,7 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
     normalizedResult.workingNotes = [];
   }
   effectiveTeamMessages = effectiveTeamMessages.filter((message) =>
-    !shouldSuppressDuplicateCoordinationTurn(session, agent, normalizeDirectedMessageSubgoalIds(message) ?? [], normalizeDirectedMessageTargets(message)) &&
-    !shouldSuppressRepeatedResearchNote(session, agent, normalizeDirectedMessageSubgoalIds(message) ?? [], normalizeDirectedMessageTargets(message), actualStateChangeIds.length > 0)
+    !shouldSuppressDuplicateCoordinationTurn(session, agent, normalizeDirectedMessageSubgoalIds(message) ?? [], normalizeDirectedMessageTargets(message))
   );
   if (normalizedResult.shouldReply && effectiveTeamMessages.length === 0) {
     normalizedResult.shouldReply = false;
@@ -303,18 +369,16 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
       ...(statusSignature ? { statusSignature } : {}),
     });
   }
-  if (normalizedResult.shouldReply && effectiveTeamMessages.length > 0 && !shouldSuppressObsoleteTurn) {
+    if (normalizedResult.shouldReply && effectiveTeamMessages.length > 0 && !shouldSuppressObsoleteTurn) {
     session.status = "running";
     for (const message of effectiveTeamMessages) {
       const targetIds = normalizeDirectedMessageTargets(message);
       const messageSubgoalIds = normalizeDirectedMessageSubgoalIds(message) ?? [];
-      const messageResearchNoteSignature = researchNoteSignature(session, agent, messageSubgoalIds, targetIds);
       const eventMetadata = {
         ...baseEventMetadata,
         ...(messageSubgoalIds.length > 0 ? { subgoalIds: messageSubgoalIds } : {}),
         ...(targetIds.length === 1 ? { targetAgentId: targetIds[0] } : {}),
         ...(targetIds.length > 0 ? { targetAgentIds: targetIds } : {}),
-        ...(messageResearchNoteSignature ? { researchNoteSignature: messageResearchNoteSignature } : {}),
         ...(canCanonicalizeSubgoal(session, agentId) && messageSubgoalIds.length > 0 && targetIds.length > 0
           ? { routingSignature: coordinationRoutingSignature(session, messageSubgoalIds, targetIds) }
           : {}),
@@ -324,18 +388,12 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
   }
   const allConflicts = [...subgoalResult.conflicts, ...obsoleteConflicts];
   if (allConflicts.length > 0) {
-    const coordinatorId = session.defaultAssigneeForStage("ready_for_build");
     const groupedConflicts = new Map<string, { conflicts: any[]; targets: string[] }>();
     for (const conflict of allConflicts) {
       const key = conflict.subgoalId;
       const current = groupedConflicts.get(key) || { conflicts: [], targets: [] };
       current.conflicts.push(conflict);
-      current.targets = [...new Set([
-        ...current.targets,
-        ...[coordinatorId, conflict.currentAssigneeAgentId]
-          .map((value) => String(value ?? "").trim())
-          .filter((value) => value && value !== agentId && session.agents.has(value)),
-      ])];
+      current.targets = [...new Set([...current.targets, ...conflictTargetIds(session, conflict, agentId)])];
       groupedConflicts.set(key, current);
     }
     for (const [subgoalId, grouped] of groupedConflicts.entries()) {
@@ -346,7 +404,7 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
         .join(" | ");
       const hasObsoleteTurn = grouped.conflicts.some((conflict) => conflict.reason === "obsolete_turn");
       const onlyDoneSoftNotes = grouped.conflicts.every((conflict) => conflict.reason === "done_soft_note");
-      const hasDoneReopenSuggestion = grouped.conflicts.some((conflict) => conflict.reason === "done_reopen_suggestion");
+      const hasReopenSuggestion = grouped.conflicts.some((conflict) => conflict.reason === "done_reopen_suggestion" || conflict.reason === "reopen_suggestion");
       const groupedConflictSignature = conflictBurstSignature(grouped.conflicts, grouped.targets);
       if (shouldSuppressConflictBurst(session, subgoalId, groupedConflictSignature)) {
         continue;
@@ -357,16 +415,16 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
         session.operatorChannel(),
         onlyDoneSoftNotes
           ? `Stale note on ${subgoalId}: ${shortenText(conflictSummary, 320)}`
-          : hasDoneReopenSuggestion
-            ? `Reopen suggestion on ${subgoalId}: ${shortenText(conflictSummary, 320)} Re-check whether the completed card should reopen.`
+          : hasReopenSuggestion
+            ? `Reopen suggestion on ${subgoalId}: ${shortenText(conflictSummary, 320)} Re-check whether the card should reopen upstream.`
             : shouldSuppressObsoleteTurn && hasObsoleteTurn && summarizeDirectedMessages(rawTeamMessages)
               ? `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Suppressed stale handoff: ${shortenText(summarizeDirectedMessages(rawTeamMessages), 220)} Re-read the latest goal board before changing this subgoal again.`
               : `Conflict on ${subgoalId}: ${shortenText(conflictSummary, 320)} Re-read the latest goal board before changing this subgoal again.`,
         {
           operatorEvent: true,
-          conflictEvent: !onlyDoneSoftNotes && !hasDoneReopenSuggestion,
+          conflictEvent: !onlyDoneSoftNotes && !hasReopenSuggestion,
           staleNoteEvent: onlyDoneSoftNotes,
-          reopenSuggestionEvent: hasDoneReopenSuggestion,
+          reopenSuggestionEvent: hasReopenSuggestion,
           obsoleteEvent: hasObsoleteTurn,
           subgoalIds: [subgoalId],
           staleUpdateBy: latestConflict.agentId,

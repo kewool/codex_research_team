@@ -156,7 +156,7 @@ import {
   scheduleAgentDrain as scheduleLiveAgentDrain,
   shouldRouteEventToAgent as shouldRouteSessionEventToAgent,
 } from "./event-router";
-import { drainAgent as drainLiveAgent } from "./turns";
+import { applyTurnResult as applyTurnResultToSession, drainAgent as drainLiveAgent } from "./turns";
 
 interface RuntimeAgent {
   preset: AgentPreset;
@@ -179,7 +179,7 @@ interface SubgoalUpdateResult {
 }
 
 interface StaleSubgoalConflict {
-  reason: "stale_update" | "obsolete_turn" | "done_soft_note" | "done_reopen_suggestion";
+  reason: "stale_update" | "obsolete_turn" | "reopen_suggestion" | "done_soft_note" | "done_reopen_suggestion";
   subgoalId: string;
   agentId: string;
   expectedRevision: number;
@@ -389,6 +389,34 @@ export class LiveSession {
     }
     this.status = "stopped";
     this.publish("system", "status", "Session stopped by operator.");
+  }
+
+  async hibernate(): Promise<void> {
+    for (const agent of this.agents.values()) {
+      if (agent.drainTimer) {
+        clearTimeout(agent.drainTimer);
+        agent.drainTimer = null;
+      }
+      if (agent.inFlightDigest) {
+        this.restoreFailedInFlightDigest(agent, agent.inFlightDigest);
+      }
+      agent.draining = false;
+      agent.inFlightDigest = null;
+      agent.inFlightSubgoalRefs = null;
+      agent.retryCount = 0;
+      agent.interruptReason = null;
+      await agent.process.stop();
+      this.updateAgentSnapshot(agent.preset.id, {
+        status: "idle",
+        waitingForInput: false,
+        ...(agent.snapshot.status === "running" || agent.snapshot.status === "starting"
+          ? { completion: "continue" }
+          : {}),
+      });
+    }
+    this.status = "idle";
+    this.persistSession();
+    this.emit({ type: "session", sessionId: this.id, snapshot: this.snapshot(false) });
   }
 
   async stopAgent(agentId: string): Promise<void> {

@@ -136,6 +136,7 @@ export function createPageActionTools(deps: {
     current.agents = Array.from(document.querySelectorAll<HTMLElement>(".agent-editor-card")).map((row, index) => {
       const name = (row.querySelector("[data-agent-name]") as HTMLInputElement)?.value.trim() || `agent_${index + 1}`;
       const model = (row.querySelector("[data-agent-model]") as HTMLSelectElement)?.value.trim() || null;
+      const modelReasoningEffort = (row.querySelector("[data-agent-reasoning-effort]") as HTMLSelectElement)?.value.trim() || null;
       const publishChannel = remapSemanticChannel(
         (row.querySelector("[data-agent-channel]") as HTMLSelectElement)?.value.trim() || defaultPublishChannelForAgent(current),
         previousDefaults,
@@ -162,6 +163,7 @@ export function createPageActionTools(deps: {
         listenChannels: listenChannels.length > 0 ? listenChannels : defaultListenChannelsForAgent(current),
         maxTurns: 0,
         model,
+        modelReasoningEffort,
         policy: {
           promptGuidance: parseLineListInput((row.querySelector("[data-agent-guidance]") as HTMLTextAreaElement)?.value || ""),
           ownedStages,
@@ -185,6 +187,9 @@ export function createPageActionTools(deps: {
     if (payload.codexAuthStatus) {
       state.snapshot.codexAuthStatus = payload.codexAuthStatus;
     }
+    if (payload.codexUsageStatus) {
+      state.snapshot.codexUsageStatus = payload.codexUsageStatus;
+    }
     ensureSelectedWorkspace();
     setFlash("info", "Runtime and team settings saved.");
     render();
@@ -198,6 +203,9 @@ export function createPageActionTools(deps: {
     if (state.snapshot && payload.codexAuthStatus) {
       state.snapshot.codexAuthStatus = payload.codexAuthStatus;
     }
+    if (state.snapshot && payload.codexUsageStatus) {
+      state.snapshot.codexUsageStatus = payload.codexUsageStatus;
+    }
     clearFlash();
     render();
   }
@@ -209,6 +217,9 @@ export function createPageActionTools(deps: {
     });
     if (state.snapshot && payload.codexAuthStatus) {
       state.snapshot.codexAuthStatus = payload.codexAuthStatus;
+    }
+    if (state.snapshot && payload.codexUsageStatus) {
+      state.snapshot.codexUsageStatus = payload.codexUsageStatus;
     }
     setFlash("info", "Codex login removed from the active home.");
     render();
@@ -340,6 +351,7 @@ export function createPageActionTools(deps: {
           listenChannels: defaultListenChannelsForAgent(config),
           maxTurns: 0,
           model: null,
+          modelReasoningEffort: null,
           policy: {
             promptGuidance: [],
             ownedStages: [],

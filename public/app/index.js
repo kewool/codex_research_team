@@ -438,7 +438,7 @@ function bindSessionStream() {
         return;
     }
     const session = currentSession();
-    if (!session || session.status === "stopped") {
+    if (!session || !session.isLive || session.status === "stopped") {
         return;
     }
     const sessionId = session.id;

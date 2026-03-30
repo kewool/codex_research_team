@@ -131,6 +131,7 @@ async function runAgentEditor(config: AppConfig, rl: any): Promise<AppConfig> {
         listenChannels: defaultListenChannels(config.defaults),
         maxTurns: 0,
         model: null,
+        modelReasoningEffort: null,
         policy: emptyAgentPolicy(),
       });
     } else if (choice === "e") {
@@ -200,6 +201,22 @@ async function main(): Promise<void> {
   const port = typeof flags.get("port") === "string" ? Number(flags.get("port")) : undefined;
   const server = await startWebServer({ configPath, host, port });
   output.write(`codex_research_team web UI: ${server.url}\n`);
+  let shuttingDown = false;
+  const shutdown = async (exitCode = 0) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    try {
+      await server.close();
+      process.exit(exitCode);
+    } catch (error) {
+      output.write(`${String((error as Error).message || error)}\n`);
+      process.exit(1);
+    }
+  };
+  process.on("SIGINT", () => void shutdown(0));
+  process.on("SIGTERM", () => void shutdown(0));
 }
 
 void main();

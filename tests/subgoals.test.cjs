@@ -106,6 +106,7 @@ test("applySubgoalUpdates records stale conflicts and normalizes build ownership
     reopenReason: "old branch",
   }]);
   assert.equal(stale.conflicts.length, 1);
+  assert.equal(stale.conflicts[0].reason, "stale_update");
   assert.equal(session.subgoals[0].conflictCount, 1);
   assert.equal(session.subgoals[0].activeConflict, true);
 
@@ -120,6 +121,26 @@ test("applySubgoalUpdates records stale conflicts and normalizes build ownership
   assert.equal(created.stage, "ready_for_build");
   assert.equal(created.assigneeAgentId, "coordinator_1");
   assert.equal(createBuild.blockedBuildPromotion, true);
+});
+
+test("downstream stale conflicts become reopen suggestions only when a build or review card is pushed upstream", () => {
+  const session = createSessionFixture();
+  addBaseSubgoal(session, {
+    revision: 4,
+    stage: "building",
+    decisionState: "resolved",
+    assigneeAgentId: "implementer_1",
+  });
+
+  const stale = subgoals.applySubgoalUpdates(session, "researcher_1", [{
+    id: "sg-1",
+    expectedRevision: 3,
+    stage: "researching",
+    reopenReason: "new evidence invalidates the build assumption",
+  }]);
+
+  assert.equal(stale.conflicts.length, 1);
+  assert.equal(stale.conflicts[0].reason, "reopen_suggestion");
 });
 
 test("done stale conflicts become soft notes or reopen suggestions", () => {

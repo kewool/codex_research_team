@@ -1,5 +1,5 @@
 ﻿// @ts-nocheck
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +14,17 @@ function codexHome(preferredHome?: string | null): string {
 function readJsonFile(path: string): any {
   const raw = readFileSync(path, "utf8").replace(/^\ufeff/, "");
   return JSON.parse(raw);
+}
+
+function readJsonIfPresent(path: string): any | null {
+  if (!existsSync(path)) {
+    return null;
+  }
+  try {
+    return readJsonFile(path);
+  } catch {
+    return null;
+  }
 }
 
 function readModelsCache(baseHome: string): { models: string[]; fetchedAt: string | null } {
@@ -119,6 +130,65 @@ function toTimestampMs(value: string | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function decodeJwtPayload(token: unknown): any | null {
+  const text = String(token ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  const parts = text.split(".");
+  if (parts.length < 2) {
+    return null;
+  }
+  try {
+    const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
+    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function authFingerprintStatePath(baseHome: string): string {
+  return join(baseHome, ".codex-usage-auth-state.json");
+}
+
+function readCurrentAuthFingerprint(baseHome: string): { fingerprint: string | null; authChangedAt: string | null } {
+  const authPath = join(baseHome, "auth.json");
+  const auth = readJsonIfPresent(authPath);
+  const payload = decodeJwtPayload(auth?.tokens?.id_token);
+  const fingerprint = String(auth?.tokens?.account_id ?? payload?.email ?? payload?.sub ?? "").trim() || null;
+  const authChangedAt = String(auth?.last_refresh ?? "").trim() || (
+    existsSync(authPath) ? statSync(authPath).mtime.toISOString() : null
+  );
+  return { fingerprint, authChangedAt };
+}
+
+function syncUsageAuthFingerprint(baseHome: string): { invalidatedAt: string | null } {
+  const current = readCurrentAuthFingerprint(baseHome);
+  if (!current.fingerprint) {
+    return { invalidatedAt: null };
+  }
+  const statePath = authFingerprintStatePath(baseHome);
+  const previous = readJsonIfPresent(statePath);
+  if (!previous || !String(previous.fingerprint ?? "").trim()) {
+    writeFileSync(statePath, JSON.stringify({
+      fingerprint: current.fingerprint,
+      changedAt: current.authChangedAt || null,
+    }, null, 2));
+    return { invalidatedAt: null };
+  }
+  const previousFingerprint = String(previous.fingerprint ?? "").trim() || null;
+  if (previousFingerprint === current.fingerprint) {
+    return { invalidatedAt: String(previous.changedAt ?? "").trim() || null };
+  }
+  const changedAt = new Date().toISOString();
+  writeFileSync(statePath, JSON.stringify({
+    fingerprint: current.fingerprint,
+    changedAt,
+  }, null, 2));
+  return { invalidatedAt: changedAt };
+}
+
 function readSessionJsonlCandidates(baseHome: string): Array<{ path: string; mtimeMs: number }> {
   const sessionsRoot = join(baseHome, "sessions");
   if (!existsSync(sessionsRoot)) {
@@ -205,6 +275,7 @@ export function loadCodexUsageStatus(preferredHome?: string | null): {
   sourceFile: string | null;
   observedAt: string | null;
   available: boolean;
+  staleReason: string | null;
   planType: string | null;
   limitId: string | null;
   limitName: string | null;
@@ -213,6 +284,7 @@ export function loadCodexUsageStatus(preferredHome?: string | null): {
   secondary: { usedPercent: number | null; windowMinutes: number | null; resetsAt: string | null } | null;
 } {
   const home = codexHome(preferredHome);
+  const authState = syncUsageAuthFingerprint(home);
   let best: {
     candidatePath: string;
     observedAt: string | null;
@@ -241,6 +313,22 @@ export function loadCodexUsageStatus(preferredHome?: string | null): {
     }
   }
   if (best?.payload?.rate_limits) {
+    const invalidatedAtMs = toTimestampMs(authState.invalidatedAt);
+    if (invalidatedAtMs > 0 && invalidatedAtMs > best.observedAtMs) {
+      return {
+        codexHomeDir: home,
+        sourceFile: null,
+        observedAt: null,
+        available: false,
+        staleReason: "auth_changed",
+        planType: null,
+        limitId: null,
+        limitName: null,
+        credits: null,
+        primary: null,
+        secondary: null,
+      };
+    }
     const rateLimits = best.payload.rate_limits;
     const credits = Number(rateLimits.credits);
     return {
@@ -248,6 +336,7 @@ export function loadCodexUsageStatus(preferredHome?: string | null): {
       sourceFile: best.candidatePath,
       observedAt: best.observedAt,
       available: true,
+      staleReason: null,
       planType: String(rateLimits.plan_type ?? "").trim() || null,
       limitId: String(rateLimits.limit_id ?? "").trim() || null,
       limitName: String(rateLimits.limit_name ?? "").trim() || null,
@@ -261,6 +350,7 @@ export function loadCodexUsageStatus(preferredHome?: string | null): {
     sourceFile: null,
     observedAt: null,
     available: false,
+    staleReason: null,
     planType: null,
     limitId: null,
     limitName: null,

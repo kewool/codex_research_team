@@ -200,6 +200,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
       listenChannels: normalizeChannelList([goal, operator, exploreChannel, coordinationChannel]),
       maxTurns: 0,
       model: null,
+      modelReasoningEffort: "medium",
       policy: {
         ...emptyAgentPolicy(),
         promptGuidance: [
@@ -236,6 +237,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
       listenChannels: normalizeChannelList([goal, operator, exploreChannel, coordinationChannel]),
       maxTurns: 0,
       model: null,
+      modelReasoningEffort: "medium",
       policy: {
         ...emptyAgentPolicy(),
         promptGuidance: [
@@ -272,6 +274,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
       listenChannels: normalizeChannelList([goal, operator, exploreChannel, coordinationChannel]),
       maxTurns: 0,
       model: null,
+      modelReasoningEffort: "medium",
       policy: {
         ...emptyAgentPolicy(),
         promptGuidance: [
@@ -308,6 +311,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
       listenChannels: normalizeChannelList([operator, exploreChannel, buildChannel, auditChannel, coordinationChannel]),
       maxTurns: 0,
       model: null,
+      modelReasoningEffort: "high",
       policy: {
         ...emptyAgentPolicy(),
         promptGuidance: [
@@ -348,6 +352,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
       listenChannels: normalizeChannelList([operator, coordinationChannel, auditChannel]),
       maxTurns: 0,
       model: null,
+      modelReasoningEffort: "high",
       policy: {
         ...emptyAgentPolicy(),
         promptGuidance: [
@@ -376,6 +381,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
       listenChannels: normalizeChannelList([operator, buildChannel]),
       maxTurns: 0,
       model: null,
+      modelReasoningEffort: "high",
       policy: {
         ...emptyAgentPolicy(),
         promptGuidance: [
@@ -384,9 +390,9 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
           "Prefer unit tests, focused fixtures, and narrow manifest/code probes over rerunning the full chat/video pipeline or loading full datasets.",
           "If a build passes review, move that subgoal to done. If fixes are required, move it back to building and target the current build owner.",
           "If review simply accepts a subgoal and no further actor needs a handoff, prefer shouldReply=false and let the goal board/state change carry the completion.",
-          "If review shows the problem was framed incorrectly or the acceptance contract itself is wrong, send it back upstream by moving the affected subgoal to researching or blocked and targeting a coordination owner.",
+          "If review shows the problem was framed incorrectly or the acceptance contract itself is wrong, explain the upstream issue to a coordination owner instead of changing the card to researching or blocked yourself.",
           "If the implementation keeps growing a single file into an oversized mixed-responsibility module, treat that as a maintainability risk and send it back to building with a refactor request.",
-          "When review reopens a subgoal, mark decisionState disputed and state the exact reopenReason so a coordination owner cannot route it as resolved build work again.",
+          "When review finds an upstream contract or assumption problem, do not directly reopen the card yourself. Send a coordinator-only reopen suggestion that names the exact subgoal id and reopenReason.",
           "If you uncover a deeper planning gap, mark the subgoal blocked and include the missing assumption or unresolved risk.",
         ],
         ownedStages: ["ready_for_review"],
@@ -419,7 +425,7 @@ export function createDefaultConfig(root = process.cwd()): AppConfig {
     codexAuthMode: "mirror-global",
     codexHomeDir,
     model: null,
-    modelReasoningEffort: "xhigh",
+    modelReasoningEffort: "high",
     modelOptions: [],
     mcpServerNames: [],
     goalChannel: "goal",
@@ -459,6 +465,7 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): AppConfig {
             listenChannels: listenChannels.length > 0 ? listenChannels : defaultListenChannels(defaults),
             maxTurns: Number(agent.maxTurns ?? 0) || 0,
             model: String(agent.model ?? "").trim() || null,
+            modelReasoningEffort: String(agent.modelReasoningEffort ?? "").trim() || null,
             policy: normalizeAgentPolicy(agent.policy),
           };
         })

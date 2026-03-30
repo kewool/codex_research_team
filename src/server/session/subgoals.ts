@@ -11,7 +11,6 @@ import {
   normalizeNextAction,
   normalizeSubgoalStage,
   normalizeTopicKey,
-  shortenText,
   SUBGOAL_ACCEPTANCE_LIMIT,
   SUBGOAL_DECISION_LIMIT,
   SUBGOAL_FACT_LIMIT,
@@ -113,7 +112,7 @@ export function resolveDirectedMessageSubgoalIds(session: any, message: any, fal
 }
 
 export function deriveSubgoalTopicKey(session: any, update: any, fallbackKey: string): string {
-  return normalizeTopicKey(update.topicKey) || fallbackKey;
+  return update.topicKey || fallbackKey;
 }
 
 export function requiresGoalBoardOwnership(session: any, agent: any): boolean {
@@ -333,11 +332,7 @@ export function referencedSubgoalIds(
 }
 
 export function deriveSubgoalTitle(session: any, update: any, fallbackId: string): string {
-  const explicitTitle = String(update.title ?? "").replace(/\s+/g, " ").trim();
-  if (explicitTitle) {
-    return shortenText(explicitTitle, 90);
-  }
-  return `Untitled ${fallbackId}`;
+  return update.title || `Untitled ${fallbackId}`;
 }
 
 export function shouldIgnoreStaleSubgoalUpdate(session: any, existing: any, update: any): boolean {
@@ -349,6 +344,28 @@ export function shouldIgnoreStaleSubgoalUpdate(session: any, existing: any, upda
     return false;
   }
   return expectedRevision !== Number(existing.revision || 0);
+}
+
+function isUpstreamConflictStage(stage: string): boolean {
+  return stage === "open" || stage === "researching" || stage === "ready_for_build" || stage === "blocked";
+}
+
+function isDownstreamConflictStage(stage: string): boolean {
+  return stage === "building" || stage === "ready_for_review";
+}
+
+function classifyStaleConflictReason(currentStage: string, requestedStage: string, nonReopenReason: "stale_update" | "obsolete_turn"): string {
+  const requestsUpstream = requestedStage === "researching" || requestedStage === "blocked";
+  if (currentStage === "done") {
+    return requestsUpstream ? "done_reopen_suggestion" : "done_soft_note";
+  }
+  if (requestsUpstream && isDownstreamConflictStage(currentStage)) {
+    return "reopen_suggestion";
+  }
+  if (isUpstreamConflictStage(currentStage)) {
+    return nonReopenReason;
+  }
+  return nonReopenReason;
 }
 
 export function buildStaleSubgoalConflict(session: any, agentId: string, existing: any, update: any, requestedStage: string): any | null {
@@ -363,10 +380,7 @@ export function buildStaleSubgoalConflict(session: any, agentId: string, existin
   if (expectedRevision === currentRevision) {
     return null;
   }
-  const reason =
-    existing.stage === "done"
-      ? ((requestedStage === "researching" || requestedStage === "blocked") ? "done_reopen_suggestion" : "done_soft_note")
-      : "stale_update";
+  const reason = classifyStaleConflictReason(existing.stage, requestedStage, "stale_update");
   return {
     reason,
     subgoalId: existing.id,
@@ -422,10 +436,7 @@ export function buildObsoleteTurnConflicts(session: any, agentId: string, tracke
     if (currentRevision === trackedRef.revision) {
       continue;
     }
-    const reason =
-      existing.stage === "done"
-        ? ((trackedRef.stage === "researching" || trackedRef.stage === "blocked") ? "done_reopen_suggestion" : "done_soft_note")
-        : "obsolete_turn";
+    const reason = classifyStaleConflictReason(existing.stage, trackedRef.stage, "obsolete_turn");
     conflicts.push({
       reason,
       subgoalId: existing.id,
@@ -451,16 +462,16 @@ export function recordSubgoalConflicts(session: any, conflicts: any[]): string[]
     const existing = session.subgoals[existingIndex];
     const timestamp = nowIso();
     const isDoneSoftNote = conflict.reason === "done_soft_note";
-    const isDoneReopenSuggestion = conflict.reason === "done_reopen_suggestion";
+    const isReopenSuggestion = conflict.reason === "done_reopen_suggestion" || conflict.reason === "reopen_suggestion";
     session.subgoals[existingIndex] = {
       ...existing,
       updatedAt: timestamp,
       updatedBy: "system",
       revision: existing.revision,
       conflictCount: Math.max(0, Number(existing.conflictCount || 0)) + 1,
-      activeConflict: !(isDoneSoftNote || isDoneReopenSuggestion),
+      activeConflict: !isDoneSoftNote,
       lastConflictAt: timestamp,
-      lastConflictSummary: isDoneReopenSuggestion ? `Reopen suggestion: ${conflict.message}` : conflict.message,
+      lastConflictSummary: isReopenSuggestion ? `Reopen suggestion: ${conflict.message}` : conflict.message,
     };
     changedIds.add(existing.id);
   }
@@ -599,13 +610,15 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
         ? null
         : (update.reopenReason
             || buildGateMessage
-            || ((requestedStage === "researching" || requestedStage === "blocked") && (update.summary || existing.summary) ? shortenText(update.summary || existing.summary, 220) : existing.lastReopenReason)
+            || ((requestedStage === "researching" || requestedStage === "blocked") && (update.summary || existing.summary)
+              ? compactWhitespace(update.summary || existing.summary).slice(0, 220) || null
+              : existing.lastReopenReason)
             || null);
       const inferredFact = !canMutateState && update.summary ? [update.summary] : [];
       session.subgoals[existingIndex] = {
         ...existing,
         title: canMutateState ? (update.title || existing.title) : existing.title,
-        topicKey: canMutateState ? deriveSubgoalTopicKey(session, update, existing.topicKey) : existing.topicKey,
+        topicKey: canMutateState ? (update.topicKey || existing.topicKey) : existing.topicKey,
         summary: canMutateState ? (update.summary || existing.summary) : existing.summary,
         facts: mergeMemoryList(existing.facts, [...inferredFact, ...(update.addFacts || [])], SUBGOAL_FACT_LIMIT),
         openQuestions: mergeMemoryList(existing.openQuestions, update.addOpenQuestions, SUBGOAL_QUESTION_LIMIT),
@@ -658,8 +671,8 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
     const stage = normalizeStageForAssignee(session, requestedAssignee, requestedStage, id);
     session.subgoals.push({
       id,
-      title: deriveSubgoalTitle(session, update, id),
-      topicKey: deriveSubgoalTopicKey(session, update, `topic-${id}`),
+      title: update.title || `Untitled ${id}`,
+      topicKey: update.topicKey || `topic-${id}`,
       summary: update.summary || "No summary provided.",
       facts: mergeMemoryList([], update.addFacts, SUBGOAL_FACT_LIMIT),
       openQuestions: mergeMemoryList([], update.addOpenQuestions, SUBGOAL_QUESTION_LIMIT),
@@ -669,7 +682,7 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
       nextAction: update.nextAction !== undefined ? normalizeNextAction(update.nextAction) : null,
       stage,
       decisionState,
-      lastReopenReason: decisionState === "resolved" ? null : (update.reopenReason || buildGateMessage || (update.summary ? shortenText(update.summary, 220) : null)),
+      lastReopenReason: decisionState === "resolved" ? null : (update.reopenReason || buildGateMessage || (update.summary ? compactWhitespace(update.summary).slice(0, 220) || null : null)),
       assigneeAgentId: normalizeAssigneeForStage(session, explicitAssignee && stage === requestedStage ? explicitAssignee : null, stage),
       mergedIntoSubgoalId: null,
       archivedAt: null,

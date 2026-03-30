@@ -49,6 +49,7 @@ function createAgent(rootDir) {
     listenChannels: ["goal", "research", "operator"],
     maxTurns: 0,
     model: "gpt-5.4",
+    modelReasoningEffort: null,
     policy: {
       promptGuidance: [],
       ownedStages: ["researching"],
@@ -168,4 +169,16 @@ test("stop kills the spawned process tree", async (t) => {
   assert.match(String(result?.message ?? result), /Codex run stopped/);
 
   await waitFor(() => !isPidAlive(parentPid) && !isPidAlive(childPid), 4000, "process tree exit");
+});
+
+test("buildCommandSpec prefers per-agent reasoning effort over the runtime default", async (t) => {
+  const { process: agentProcess } = createProcessHarness(t);
+  agentProcess.config.defaults.modelReasoningEffort = "high";
+  agentProcess.agent.modelReasoningEffort = "medium";
+
+  const spec = agentProcess.buildCommandSpec();
+  const serialized = [spec.file, ...spec.args].join(" ");
+
+  assert.match(serialized, /model_reasoning_effort=.*medium/i);
+  assert.doesNotMatch(serialized, /model_reasoning_effort=.*xhigh/i);
 });
