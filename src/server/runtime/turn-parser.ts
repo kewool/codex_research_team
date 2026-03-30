@@ -121,10 +121,115 @@ function normalizeParsedTurnResult(
 }
 
 function repairMalformedResponseJson(payloadText: string): string {
-  return payloadText
+  return repairRepeatedArrayProperties(payloadText
     .replace(/,\s*([}\]])/g, "$1")
     .replace(/([{,]\s*)([A-Za-z0-9_]+)\s*:/g, '$1"$2":')
-    .replace(/:\s*'([^']*)'/g, (_match, value: string) => `: ${JSON.stringify(value)}`);
+    .replace(/:\s*'([^']*)'/g, (_match, value: string) => `: ${JSON.stringify(value)}`));
+}
+
+function findMatchingBracket(text: string, openIndex: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+  for (let index = openIndex; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaping = true;
+        continue;
+      }
+      if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "[") {
+      depth += 1;
+      continue;
+    }
+    if (char === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return -1;
+}
+
+function repairRepeatedArrayKey(payloadText: string, key: string): string {
+  const marker = `"${key}"`;
+  let text = payloadText;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    let searchFrom = 0;
+    while (true) {
+      const propertyIndex = text.indexOf(marker, searchFrom);
+      if (propertyIndex < 0) {
+        break;
+      }
+      const arrayStart = text.indexOf("[", propertyIndex + marker.length);
+      if (arrayStart < 0) {
+        break;
+      }
+      const colonSlice = text.slice(propertyIndex + marker.length, arrayStart);
+      if (!/^\s*:\s*$/.test(colonSlice)) {
+        searchFrom = propertyIndex + marker.length;
+        continue;
+      }
+      const arrayEnd = findMatchingBracket(text, arrayStart);
+      if (arrayEnd < 0) {
+        break;
+      }
+      const nestedPropertyIndex = text.indexOf(marker, arrayStart + 1);
+      if (nestedPropertyIndex < 0 || nestedPropertyIndex > arrayEnd) {
+        searchFrom = arrayEnd + 1;
+        continue;
+      }
+      const nestedArrayStart = text.indexOf("[", nestedPropertyIndex + marker.length);
+      if (nestedArrayStart < 0 || nestedArrayStart > arrayEnd) {
+        searchFrom = arrayEnd + 1;
+        continue;
+      }
+      const nestedColonSlice = text.slice(nestedPropertyIndex + marker.length, nestedArrayStart);
+      if (!/^\s*:\s*$/.test(nestedColonSlice)) {
+        searchFrom = nestedPropertyIndex + marker.length;
+        continue;
+      }
+      const nestedArrayEnd = findMatchingBracket(text, nestedArrayStart);
+      if (nestedArrayEnd < 0) {
+        break;
+      }
+      const nestedContents = text.slice(nestedArrayStart + 1, nestedArrayEnd);
+      text = `${text.slice(0, nestedPropertyIndex)}${nestedContents}${text.slice(nestedArrayEnd + 1)}`;
+      changed = true;
+      break;
+    }
+  }
+  return text;
+}
+
+function repairRepeatedArrayProperties(payloadText: string): string {
+  const repeatedArrayKeys = [
+    "workingNotes",
+    "teamMessages",
+    "subgoalUpdates",
+    "addFacts",
+    "addOpenQuestions",
+    "addResolvedDecisions",
+    "addAcceptanceCriteria",
+    "addRelevantFiles",
+  ];
+  return repeatedArrayKeys.reduce((current, key) => repairRepeatedArrayKey(current, key), payloadText);
 }
 
 export function parseAgentTurnResult(rawText: string): AgentTurnResult {

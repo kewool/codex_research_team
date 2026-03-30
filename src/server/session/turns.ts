@@ -1,6 +1,7 @@
 // @ts-nocheck
 import {
   compactWhitespace,
+  extractTargetAgentIds,
   normalizeDirectedMessageSubgoalIds,
   normalizeDirectedMessageTargets,
   shortenText,
@@ -88,6 +89,18 @@ function conflictTargetIds(session: any, conflict: any, sourceAgentId: string): 
     }
   }
   return [...targets];
+}
+
+function hasTargetedOperatorRequest(agent: any): boolean {
+  const digest = agent?.inFlightDigest;
+  if (!digest) {
+    return false;
+  }
+  const operatorEvents = [
+    ...(Array.isArray(digest.operatorEvents) ? digest.operatorEvents : []),
+    ...(Array.isArray(digest.directInputs) ? digest.directInputs : []),
+  ];
+  return operatorEvents.some((event: any) => extractTargetAgentIds(event?.metadata).includes(agent.preset.id));
 }
 
 export async function drainAgent(session: any, agentId: string): Promise<void> {
@@ -209,6 +222,7 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
   const reviewerReopenRewrite = rewriteReviewerReopenSuggestions(session, agentId, agent, normalizedResult, parsedRawTeamMessages);
   const rawTeamMessages = reviewerReopenRewrite.teamMessages;
   normalizedResult.subgoalUpdates = reviewerReopenRewrite.subgoalUpdates;
+  const requestedReply = Boolean(normalizedResult.shouldReply);
   const obsoleteConflicts = session.buildObsoleteTurnConflicts(agentId, inFlightSubgoalRefs);
   const hasRequestedStateMutation = Array.isArray(normalizedResult.subgoalUpdates) && normalizedResult.subgoalUpdates.length > 0;
   const hasMeaningfulTurnOutput =
@@ -236,6 +250,7 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
   const referencedSubgoalIds = session.referencedSubgoalIds(changedSubgoalIds, normalizedResult.subgoalUpdates, inFlightSubgoalRefs);
   if (!shouldSuppressObsoleteTurn) {
     agent.snapshot.lastSeenSubgoalRevision = session.subgoalRevision;
+    agent.snapshot.lastSeenActionableSignature = session.actionableSubgoalSignature(agent);
   }
   const allowedTargetSet = new Set(
     (Array.isArray(agent.preset.policy.allowedTargetAgentIds) ? agent.preset.policy.allowedTargetAgentIds : [])
@@ -326,6 +341,12 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
     normalizedResult.shouldReply = false;
     effectiveTeamMessages = [];
   }
+  const notesOnlyOperatorReply =
+    requestedReply &&
+    hasTargetedOperatorRequest(agent) &&
+    !shouldSuppressObsoleteTurn &&
+    effectiveTeamMessages.length === 0 &&
+    normalizedResult.workingNotes.length > 0;
 
   const baseEventMetadata = {
     agentId,
@@ -353,11 +374,14 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
   session.persistAgent(agentId);
   session.emit({ type: "agent", sessionId: session.id, agent: { ...agent.snapshot } });
 
-  const statusSignature = statusEventSignature(session, agent, actualStateChangeIds, normalizedResult.completion, subgoalResult.blockedBuildPromotion);
+  const statusSignature = notesOnlyOperatorReply
+    ? `operator-reply|${agent.preset.id}|turn=${agent.snapshot.turnCount}`
+    : statusEventSignature(session, agent, actualStateChangeIds, normalizedResult.completion, subgoalResult.blockedBuildPromotion);
   const shouldPublishStatus =
     normalizedResult.workingNotes.length > 0 &&
     !shouldSuppressObsoleteTurn &&
     (
+      notesOnlyOperatorReply ||
       normalizedResult.completion !== "continue" ||
       actualStateChangeIds.length > 0 ||
       subgoalResult.blockedBuildPromotion
@@ -366,6 +390,7 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
   if (shouldPublishStatus) {
     session.publish(agent.preset.name, "status", normalizedResult.workingNotes.join(" | "), {
       ...baseEventMetadata,
+      ...(notesOnlyOperatorReply ? { shouldReply: requestedReply, operatorReplyEvent: true } : {}),
       ...(statusSignature ? { statusSignature } : {}),
     });
   }

@@ -178,6 +178,69 @@ test("message-only research note to coordinator is still published when board st
   assert.deepEqual(researchEvent.metadata?.targetAgentIds, ["coordinator_1"]);
 });
 
+test("notes-only reply to a targeted operator question is still published to the feed", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-operator-reply-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  const session = new LiveSession({
+    config,
+    goal: "operator reply regression",
+    title: "operator reply regression",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+  });
+
+  session.initializeAgents();
+  const coordinator = session.agents.get("coordinator_1");
+  assert.ok(coordinator);
+  coordinator.inFlightDigest = {
+    latestGoal: null,
+    operatorEvents: [{
+      sequence: 1,
+      sender: "operator",
+      channel: "operator",
+      content: "Answer this targeted question",
+      metadata: { targetAgentId: "coordinator_1", targetAgentIds: ["coordinator_1"] },
+      timestamp: "2026-03-30T00:00:00.000Z",
+    }],
+    directInputs: [],
+    channelEvents: {},
+    otherEvents: [],
+    totalCount: 1,
+    maxSequence: 1,
+  };
+
+  applyTurnResult(session, "coordinator_1", {
+    shouldReply: true,
+    workingNotes: ["Use the current build queue and keep sg-9 behind sg-6."],
+    teamMessages: [],
+    subgoalUpdates: [],
+    completion: "continue",
+    rawText: "",
+    runtimeDiagnostics: {
+      sawFileChange: false,
+      sawPolicyWriteBlock: false,
+      sawBroadDataLoad: false,
+      sawBroadOutputDump: false,
+    },
+  }, 1, null);
+
+  const statusEvent = [...session.recentEvents].reverse().find((event) =>
+    event.sender === "coordinator_1" &&
+    event.channel === "status" &&
+    /keep sg-9 behind sg-6/i.test(event.content),
+  );
+  assert.ok(statusEvent, "notes-only operator reply should be visible in the feed");
+  assert.equal(statusEvent.metadata?.operatorReplyEvent, true);
+  assert.equal(statusEvent.metadata?.shouldReply, true);
+});
+
 test("reviewer upstream reopen becomes a coordinator-only message instead of directly reopening the card", async (t) => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-reviewer-reopen-"));
   const previousCwd = process.cwd();

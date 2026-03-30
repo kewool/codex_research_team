@@ -99,6 +99,9 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
     if (meta.directInput) {
       metaBits.push("direct input");
     }
+    if (meta.operatorReplyEvent) {
+      metaBits.push("operator reply");
+    }
     if (meta.conflictEvent) {
       metaBits.push("conflict");
     }

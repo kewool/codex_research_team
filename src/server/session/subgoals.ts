@@ -25,6 +25,7 @@ export function resetGoalBoard(session: any, goal: string, actor: string): void 
   session.subgoals = [];
   for (const agent of session.agents.values()) {
     agent.snapshot.lastSeenSubgoalRevision = 0;
+    agent.snapshot.lastSeenActionableSignature = null;
     session.persistAgent(agent.preset.id);
   }
   session.updatedAt = timestamp;

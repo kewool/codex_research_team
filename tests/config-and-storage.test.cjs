@@ -126,6 +126,7 @@ test("storage paginates session events, agent history, and saved snapshots", asy
     turnCount: 0,
     lastConsumedSequence: 0,
     lastSeenSubgoalRevision: 0,
+    lastSeenActionableSignature: null,
     pendingSignals: 0,
     waitingForInput: false,
     lastPrompt: "",

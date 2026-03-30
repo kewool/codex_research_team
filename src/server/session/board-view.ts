@@ -18,6 +18,23 @@ export function actionableSubgoalsForAgent(session: any, agent: any): any[] {
   });
 }
 
+export function actionableSubgoalSignature(session: any, agent: any): string | null {
+  const actionable = actionableSubgoalsForAgent(session, agent);
+  if (actionable.length === 0) {
+    return null;
+  }
+  return actionable
+    .map((subgoal: any) => [
+      String(subgoal.id ?? "").trim(),
+      String(subgoal.stage ?? "").trim(),
+      String(subgoal.decisionState ?? "").trim(),
+      String(subgoal.assigneeAgentId ?? "-").trim() || "-",
+      String(Number(subgoal.revision || 0)),
+    ].join(":"))
+    .sort()
+    .join("|");
+}
+
 export function relevantSubgoalsForAgent(session: any, agent: any): any[] {
   const actionable = actionableSubgoalsForAgent(session, agent);
   const ownedStages = Array.isArray(agent.preset.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
@@ -61,10 +78,21 @@ export function relevantSubgoalsForAgent(session: any, agent: any): any[] {
 }
 
 export function goalBoardNeedsAttention(session: any, agent: any): boolean {
-  if (actionableSubgoalsForAgent(session, agent).length === 0) {
+  const signature = actionableSubgoalSignature(session, agent);
+  if (!signature) {
     return false;
   }
-  return Number(agent.snapshot.lastSeenSubgoalRevision || 0) < session.subgoalRevision;
+  const previousEntries = new Set(
+    String(agent.snapshot.lastSeenActionableSignature ?? "")
+      .split("|")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+  const currentEntries = signature
+    .split("|")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return currentEntries.some((entry) => !previousEntries.has(entry));
 }
 
 export function buildGoalBoardSummary(session: any, agent: any): string {

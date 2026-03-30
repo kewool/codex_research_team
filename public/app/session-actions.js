@@ -11,12 +11,17 @@ export function createSessionActionTools(deps) {
             return;
         }
         const targetAgentId = qs("#session-target").value || null;
+        const hadLiveStream = Boolean(state.stream);
+        const wasLive = Boolean(session.isLive);
         const payload = await api(`/api/sessions/${encodeURIComponent(session.id)}/instructions`, {
             method: "POST",
             body: JSON.stringify({ channel, text, targetAgentId }),
         });
         upsertSession(payload.session);
-        bindSessionStream();
+        if (!hadLiveStream || !wasLive) {
+            bindSessionStream();
+        }
+        await loadSessionFeed(session.id, { reset: true, force: true });
         qs("#session-command").value = "";
         clearFlash();
         render();
@@ -37,6 +42,7 @@ export function createSessionActionTools(deps) {
         const payload = await api(`/api/sessions/${encodeURIComponent(session.id)}/resume`, { method: "POST" });
         upsertSession(payload.session);
         bindSessionStream();
+        await loadSessionFeed(session.id, { reset: true, force: true });
         clearFlash();
         render();
     }

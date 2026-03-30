@@ -54,6 +54,18 @@ test("turn parser repairs malformed json payloads", () => {
   assert.equal(result.completion, "blocked");
 });
 
+test("turn parser repairs duplicated array keys inside subgoal updates", () => {
+  const malformed = wrap(
+    '{"shouldReply":true,"workingNotes":["note"],"teamMessages":[],"subgoalUpdates":[{"id":"sg-12","expectedRevision":159,"summary":"Route the narrow shared-input reuse slice into implementation for the several-thousand-case direct batch path.","addFacts":["The canonical build contract is the rev159 shared-input amortization handoff, not the stale rev152 build-ready note.","addFacts":["Replay should inherit the same reuse through batch.main rather than a separate replay-only cache surface."]],"nextAction":"implementer_1 should add batch-local distinct-input reuse plus the counted 40-case shared-corpus regression, then hand sg-12 to review.","stage":"building","decisionState":"resolved","assigneeAgentId":"implementer_1"}],"completion":"continue"}',
+  );
+  const result = parseAgentTurnResult(malformed);
+  assert.equal(result.subgoalUpdates.length, 1);
+  assert.deepEqual(result.subgoalUpdates[0].addFacts, [
+    "The canonical build contract is the rev159 shared-input amortization handoff, not the stale rev152 build-ready note.",
+    "Replay should inherit the same reuse through batch.main rather than a separate replay-only cache surface.",
+  ]);
+});
+
 test("turn parser helpers detect envelopes and command patterns", () => {
   assert.equal(hasStructuredResponseEnvelope("x<codex_research_team-response>{}</codex_research_team-response>y"), true);
   assert.equal(looksLikeWriteProbeCommand('powershell -Command "New-Item foo.txt"'), true);

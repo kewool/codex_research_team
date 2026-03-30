@@ -56,8 +56,8 @@ function rewriteRelativeImports(code) {
     .join("\n");
 }
 
-rmSync(resolve(outputRoot, "app"), { recursive: true, force: true });
-rmSync(resolve(outputRoot, "app.js"), { force: true });
+rmSync(resolve(outputRoot, "app"), { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+rmSync(resolve(outputRoot, "app.js"), { force: true, maxRetries: 8, retryDelay: 50 });
 
 for (const sourcePath of listTsFiles(sourceRoot)) {
   const relativePath = relative(sourceRoot, sourcePath).replace(/\\/g, "/");

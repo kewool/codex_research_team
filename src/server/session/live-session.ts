@@ -130,6 +130,7 @@ import {
 } from "./subgoals";
 import {
   actionableSubgoalsForAgent,
+  actionableSubgoalSignature,
   buildActionableSubgoalSummary,
   buildGoalBoardSummary,
   buildRelevantSubgoalSummary,
@@ -497,6 +498,7 @@ export class LiveSession {
     const referencedSubgoalIds = this.referencedSubgoalIds(changedSubgoalIds, normalizedResult.subgoalUpdates, inFlightSubgoalRefs);
     if (!shouldSuppressObsoleteTurn) {
       agent.snapshot.lastSeenSubgoalRevision = this.subgoalRevision;
+      agent.snapshot.lastSeenActionableSignature = this.actionableSubgoalSignature(agent);
     }
     const rawTeamMessages = Array.isArray(normalizedResult.teamMessages)
       ? normalizedResult.teamMessages
@@ -898,6 +900,10 @@ export class LiveSession {
 
   private actionableSubgoalsForAgent(agent: RuntimeAgent): SessionSubgoal[] {
     return actionableSubgoalsForAgent(this, agent);
+  }
+
+  private actionableSubgoalSignature(agent: RuntimeAgent): string | null {
+    return actionableSubgoalSignature(this, agent);
   }
 
   private relevantSubgoalsForAgent(agent: RuntimeAgent): SessionSubgoal[] {
