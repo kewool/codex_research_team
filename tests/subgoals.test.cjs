@@ -123,6 +123,25 @@ test("applySubgoalUpdates records stale conflicts and normalizes build ownership
   assert.equal(createBuild.blockedBuildPromotion, true);
 });
 
+test("coordinator can create a resolved build slice directly in building for the implementer", () => {
+  const session = createSessionFixture();
+
+  const result = subgoals.applySubgoalUpdates(session, "coordinator_1", [{
+    title: "Execution fallback",
+    topicKey: "execution-fallback",
+    summary: "Implement the next replay execution fix",
+    stage: "building",
+    decisionState: "resolved",
+    assigneeAgentId: "implementer_1",
+  }]);
+
+  const created = session.subgoals.find((item) => item.topicKey === "execution-fallback");
+  assert.ok(created);
+  assert.equal(created.stage, "building");
+  assert.equal(created.assigneeAgentId, "implementer_1");
+  assert.equal(result.blockedBuildPromotion, false);
+});
+
 test("downstream stale conflicts become reopen suggestions only when a build or review card is pushed upstream", () => {
   const session = createSessionFixture();
   addBaseSubgoal(session, {

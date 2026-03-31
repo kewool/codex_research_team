@@ -661,7 +661,11 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
       blockedBuildPromotion = true;
       buildGateMessage = `Build promotion blocked for ${id}: unresolved contradictions remain. Mark the subgoal decisionState=resolved before sending it to building.`;
     }
-    if (requestedStage === "building" && !agentOwnsStage(session, agentId, "building")) {
+    if (
+      requestedStage === "building" &&
+      !agentOwnsStage(session, agentId, "building") &&
+      !coordinationOwnerIds(session).includes(agentId)
+    ) {
       requestedStage = "ready_for_build";
       blockedBuildPromotion = true;
     }

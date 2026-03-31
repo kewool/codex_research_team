@@ -411,6 +411,68 @@ test("mechanical stale conflicts target only the coordinator while reopen sugges
   assert.equal(secondConflict.metadata?.reopenSuggestionEvent, true);
 });
 
+test("coordinator build handoff for a new resolved slice keeps the implementer target", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-coordinator-build-handoff-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  const session = new LiveSession({
+    config,
+    goal: "coordinator build routing regression",
+    title: "coordinator build routing regression",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+  });
+
+  session.initializeAgents();
+
+  applyTurnResult(session, "coordinator_1", {
+    shouldReply: true,
+    workingNotes: ["The next gap is implementation, not more research."],
+    teamMessages: [{
+      content: "Build the replay execution fallback for sparse history.",
+      targetAgentId: "implementer_1",
+      targetAgentIds: ["implementer_1"],
+      subgoalIds: ["sg-1"],
+    }],
+    subgoalUpdates: [{
+      title: "Sparse replay execution fallback",
+      topicKey: "sparse-replay-execution",
+      summary: "Implement replay lifecycle advancement for sparse closed-market history.",
+      stage: "building",
+      decisionState: "resolved",
+      assigneeAgentId: "implementer_1",
+      nextAction: "implementer_1 should add the replay execution fallback.",
+    }],
+    completion: "continue",
+    rawText: "",
+    runtimeDiagnostics: {
+      sawFileChange: false,
+      sawPolicyWriteBlock: false,
+      sawBroadDataLoad: false,
+      sawBroadOutputDump: false,
+    },
+  }, 1, null);
+
+  const created = session.snapshot().subgoals.find((subgoal) => subgoal.topicKey === "sparse-replay-execution");
+  assert.ok(created, "expected the build slice to be created");
+  assert.equal(created.stage, "building");
+  assert.equal(created.assigneeAgentId, "implementer_1");
+
+  const coordinationEvent = [...session.snapshot().recentEvents].reverse().find((event) =>
+    event.sender === "coordinator_1" &&
+    event.channel === "coordination" &&
+    /replay execution fallback/i.test(event.content),
+  );
+  assert.ok(coordinationEvent, "expected a coordination handoff");
+  assert.deepEqual(coordinationEvent.metadata?.targetAgentIds, ["implementer_1"]);
+});
+
 test("self-originated coordinator stale conflicts still target the coordinator instead of broadcasting", async (t) => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-self-conflict-routing-"));
   const previousCwd = process.cwd();
