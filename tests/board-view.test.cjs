@@ -105,3 +105,91 @@ test("researchers do not wake when a research card is handed off downstream", ()
 
   assert.equal(boardView.goalBoardNeedsAttention(session, researcher), true);
 });
+
+test("researchers only see actionable and directly targeted subgoals in relevant memory", () => {
+  const session = createSessionFixture();
+  pushSubgoal(session, {
+    id: "sg-1",
+    title: "Owned research slice",
+    topicKey: "owned-research-slice",
+    stage: "researching",
+    decisionState: "open",
+    revision: 4,
+  });
+  pushSubgoal(session, {
+    id: "sg-2",
+    title: "Targeted disputed slice",
+    topicKey: "targeted-disputed-slice",
+    stage: "researching",
+    decisionState: "disputed",
+    revision: 7,
+  });
+  pushSubgoal(session, {
+    id: "sg-3",
+    title: "Unrelated disputed slice",
+    topicKey: "unrelated-disputed-slice",
+    stage: "ready_for_build",
+    decisionState: "disputed",
+    assigneeAgentId: "coordinator_1",
+    revision: 9,
+  });
+
+  const researcher = session.agents.get("researcher_1");
+  const digest = {
+    latestGoal: null,
+    operatorEvents: [],
+    directInputs: [],
+    channelEvents: {
+      research: [{
+        sequence: 10,
+        sender: "coordinator_1",
+        channel: "research",
+        content: "Look at sg-2",
+        metadata: {
+          targetAgentId: "researcher_1",
+          targetAgentIds: ["researcher_1"],
+          subgoalIds: ["sg-2"],
+        },
+      }],
+    },
+    otherEvents: [],
+    totalCount: 1,
+    maxSequence: 10,
+  };
+
+  const relevant = boardView.relevantSubgoalsForAgent(session, researcher, digest).map((subgoal) => subgoal.id).sort();
+  assert.deepEqual(relevant, ["sg-1", "sg-2"]);
+});
+
+test("routing owners wake when downstream review work closes and frees the next queue decision", () => {
+  const session = createSessionFixture();
+  pushSubgoal(session, {
+    id: "sg-1",
+    title: "Queued build slice",
+    topicKey: "queued-build-slice",
+    stage: "ready_for_build",
+    decisionState: "resolved",
+    assigneeAgentId: "coordinator_1",
+    revision: 10,
+  });
+  pushSubgoal(session, {
+    id: "sg-2",
+    title: "Active review slice",
+    topicKey: "active-review-slice",
+    stage: "ready_for_review",
+    decisionState: "resolved",
+    assigneeAgentId: "reviewer_1",
+    revision: 12,
+  });
+
+  const coordinator = session.agents.get("coordinator_1");
+  coordinator.snapshot.lastSeenRoutingSignature = boardView.routingAttentionSignature(session, coordinator);
+
+  assert.equal(boardView.goalBoardNeedsAttention(session, coordinator), false);
+
+  session.subgoals[1].stage = "done";
+  session.subgoals[1].assigneeAgentId = null;
+  session.subgoals[1].revision = 13;
+
+  assert.equal(boardView.goalBoardNeedsAttention(session, coordinator), true);
+});

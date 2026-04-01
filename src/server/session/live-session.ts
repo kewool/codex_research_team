@@ -137,6 +137,7 @@ import {
   goalBoardNeedsAttention,
   pingGoalBoardOwners,
   relevantSubgoalsForAgent,
+  routingAttentionSignature,
 } from "./board-view";
 import {
   appendAgentHistory as appendRuntimeAgentHistory,
@@ -274,7 +275,7 @@ export class LiveSession {
           }))
         : [];
       this.updatedAt = String(options.snapshot.updatedAt || this.updatedAt);
-      this.status = options.snapshot.status === "stopped" || options.snapshot.status === "error" ? "idle" : options.snapshot.status;
+      this.status = options.snapshot.status || this.status;
       this.historySerial = Math.max(0, this.sequence * 10);
     }
   }
@@ -499,6 +500,7 @@ export class LiveSession {
     if (!shouldSuppressObsoleteTurn) {
       agent.snapshot.lastSeenSubgoalRevision = this.subgoalRevision;
       agent.snapshot.lastSeenActionableSignature = this.actionableSubgoalSignature(agent);
+      agent.snapshot.lastSeenRoutingSignature = this.routingAttentionSignature(agent);
     }
     const rawTeamMessages = Array.isArray(normalizedResult.teamMessages)
       ? normalizedResult.teamMessages
@@ -542,6 +544,7 @@ export class LiveSession {
       !requestedStages.has("researching");
     const materializeTeamMessage = (message: DirectedTeamMessage): DirectedTeamMessage => {
       const effectiveSubgoalIds = this.resolveDirectedMessageSubgoalIds(message, referencedSubgoalIds);
+      const hadExplicitTargets = normalizeDirectedMessageTargets(message).length > 0;
       const normalizedTargetAgentIds = [...new Set(
         normalizeDirectedMessageTargets(message)
           .map((value) => String(value ?? "").trim())
@@ -567,11 +570,18 @@ export class LiveSession {
         if (!target) {
           return false;
         }
+        const listensToChannel = Array.isArray(target.preset.listenChannels) && target.preset.listenChannels.includes(agent.preset.publishChannel);
+        if (!listensToChannel) {
+          return false;
+        }
         if (!this.requiresGoalBoardOwnership(target)) {
           return true;
         }
         return this.goalBoardNeedsAttention(target);
       });
+      if (hadExplicitTargets && effectiveTargetAgentIds.length === 0) {
+        return null as any;
+      }
       return {
         content: message.content,
         ...(effectiveTargetAgentIds.length === 1 ? { targetAgentId: effectiveTargetAgentIds[0] } : {}),
@@ -580,7 +590,9 @@ export class LiveSession {
       };
     };
     let effectiveTeamMessages = normalizedResult.shouldReply && !shouldSuppressObsoleteTurn
-      ? rawTeamMessages.map((message) => materializeTeamMessage(message))
+      ? rawTeamMessages
+          .map((message) => materializeTeamMessage(message))
+          .filter(Boolean)
       : [];
     if (
       this.isDiscoveryOwner(agentId) &&
@@ -906,8 +918,12 @@ export class LiveSession {
     return actionableSubgoalSignature(this, agent);
   }
 
-  private relevantSubgoalsForAgent(agent: RuntimeAgent): SessionSubgoal[] {
-    return relevantSubgoalsForAgent(this, agent);
+  private routingAttentionSignature(agent: RuntimeAgent): string | null {
+    return routingAttentionSignature(this, agent);
+  }
+
+  private relevantSubgoalsForAgent(agent: RuntimeAgent, digest?: PendingDigest | null): SessionSubgoal[] {
+    return relevantSubgoalsForAgent(this, agent, digest ?? null);
   }
 
   private goalBoardNeedsAttention(agent: RuntimeAgent): boolean {
@@ -922,8 +938,8 @@ export class LiveSession {
     return buildActionableSubgoalSummary(this, agent);
   }
 
-  private buildRelevantSubgoalSummary(agent: RuntimeAgent): string {
-    return buildRelevantSubgoalSummary(this, agent);
+  private buildRelevantSubgoalSummary(agent: RuntimeAgent, digest?: PendingDigest | null): string {
+    return buildRelevantSubgoalSummary(this, agent, digest ?? null);
   }
 
   private pingGoalBoardOwners(): void {

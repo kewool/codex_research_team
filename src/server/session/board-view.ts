@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { shortenText } from "./helpers";
+import { extractTargetAgentIds, normalizeDirectedMessageSubgoalIds, shortenText } from "./helpers";
 import { activeSubgoals } from "./subgoals";
 
 export function actionableSubgoalsForAgent(session: any, agent: any): any[] {
@@ -35,11 +35,68 @@ export function actionableSubgoalSignature(session: any, agent: any): string | n
     .join("|");
 }
 
-export function relevantSubgoalsForAgent(session: any, agent: any): any[] {
-  const actionable = actionableSubgoalsForAgent(session, agent);
+export function routingAttentionSignature(session: any, agent: any): string | null {
+  if (!isRoutingOwner(agent)) {
+    return null;
+  }
+  const routingRelevant = activeSubgoals(session).filter((subgoal: any) =>
+    ["ready_for_build", "blocked", "building", "ready_for_review", "done"].includes(String(subgoal.stage ?? "").trim()),
+  );
+  if (routingRelevant.length === 0) {
+    return null;
+  }
+  return routingRelevant
+    .map((subgoal: any) => [
+      String(subgoal.id ?? "").trim(),
+      String(subgoal.stage ?? "").trim(),
+      String(subgoal.decisionState ?? "").trim(),
+      String(subgoal.assigneeAgentId ?? "-").trim() || "-",
+      String(Number(subgoal.revision || 0)),
+    ].join(":"))
+    .sort()
+    .join("|");
+}
+
+function ownsAnyStage(agent: any, stages: string[]): boolean {
   const ownedStages = Array.isArray(agent.preset.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
-  const ownsDiscoveryStages = ownedStages.includes("open") || ownedStages.includes("researching");
-  const ownsRoutingStages = ownedStages.includes("ready_for_build") || ownedStages.includes("blocked");
+  return stages.some((stage) => ownedStages.includes(stage));
+}
+
+function isRoutingOwner(agent: any): boolean {
+  return ownsAnyStage(agent, ["ready_for_build", "blocked"]);
+}
+
+function isDiscoveryOwner(agent: any): boolean {
+  return ownsAnyStage(agent, ["open", "researching"]);
+}
+
+function relevantSubgoalIdsFromDigest(session: any, agent: any, digest: any): string[] {
+  const events = [
+    ...(digest?.latestGoal ? [digest.latestGoal] : []),
+    ...(Array.isArray(digest?.operatorEvents) ? digest.operatorEvents : []),
+    ...(Array.isArray(digest?.directInputs) ? digest.directInputs : []),
+    ...Object.values(digest?.channelEvents ?? {}).flat(),
+    ...(Array.isArray(digest?.otherEvents) ? digest.otherEvents : []),
+  ];
+  const ids = new Set<string>();
+  for (const event of events) {
+    const targetIds = extractTargetAgentIds(event?.metadata);
+    if (targetIds.length > 0 && !targetIds.includes(agent.preset.id)) {
+      continue;
+    }
+    const rawIds = normalizeDirectedMessageSubgoalIds(event?.metadata);
+    for (const subgoalId of Array.isArray(rawIds) ? rawIds : []) {
+      const canonical = session.canonicalSubgoalForId(subgoalId);
+      if (canonical?.id) {
+        ids.add(canonical.id);
+      }
+    }
+  }
+  return [...ids];
+}
+
+export function relevantSubgoalsForAgent(session: any, agent: any, digest: any = null): any[] {
+  const actionable = actionableSubgoalsForAgent(session, agent);
   const candidates = new Map<string, any>();
   const push = (subgoal: any | null | undefined): void => {
     if (!subgoal?.id) {
@@ -51,13 +108,11 @@ export function relevantSubgoalsForAgent(session: any, agent: any): any[] {
   for (const subgoal of actionable) {
     push(subgoal);
   }
-  if (ownsDiscoveryStages) {
-    for (const subgoal of activeSubgoals(session)) {
-      if (subgoal.decisionState === "disputed" || subgoal.activeConflict || subgoal.assigneeAgentId === agent.preset.id) {
-        push(subgoal);
-      }
-    }
-  } else if (ownsRoutingStages) {
+  const targetedSubgoalIds = relevantSubgoalIdsFromDigest(session, agent, digest);
+  for (const subgoalId of targetedSubgoalIds) {
+    push(session.canonicalSubgoalForId(subgoalId));
+  }
+  if (isRoutingOwner(agent)) {
     for (const subgoal of activeSubgoals(session)) {
       if (
         subgoal.activeConflict ||
@@ -74,10 +129,15 @@ export function relevantSubgoalsForAgent(session: any, agent: any): any[] {
 
   return [...candidates.values()]
     .sort((left: any, right: any) => Number(right.revision || 0) - Number(left.revision || 0))
-    .slice(0, ownsDiscoveryStages || ownsRoutingStages ? 4 : 2);
+    .slice(0, isRoutingOwner(agent) ? 6 : isDiscoveryOwner(agent) ? 3 : 2);
 }
 
 export function goalBoardNeedsAttention(session: any, agent: any): boolean {
+  if (isRoutingOwner(agent)) {
+    const signature = routingAttentionSignature(session, agent);
+    const previous = String(agent.snapshot.lastSeenRoutingSignature ?? "").trim() || null;
+    return signature !== previous;
+  }
   const signature = actionableSubgoalSignature(session, agent);
   if (!signature) {
     return false;
@@ -130,31 +190,33 @@ export function buildActionableSubgoalSummary(session: any, agent: any): string 
     .join("\n");
 }
 
-export function buildRelevantSubgoalSummary(session: any, agent: any): string {
-  const relevant = relevantSubgoalsForAgent(session, agent);
+export function buildRelevantSubgoalSummary(session: any, agent: any, digest: any = null): string {
+  const relevant = relevantSubgoalsForAgent(session, agent, digest);
   if (relevant.length === 0) {
     return "(none)";
   }
   return relevant
     .map((subgoal: any) => {
+      const routingOwner = isRoutingOwner(agent);
+      const buildOwner = ownsAnyStage(agent, ["building", "ready_for_review"]);
       const lines = [
         `- ${shortenText(subgoal.title, 100)} (${subgoal.id}) rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState}${subgoal.assigneeAgentId ? ` assignee=${subgoal.assigneeAgentId}` : ""}`,
         `  summary: ${shortenText(subgoal.summary, 180)}`,
       ];
-      if (subgoal.facts.length > 0) {
-        lines.push(`  facts: ${subgoal.facts.map((item: string) => shortenText(item, 120)).join(" | ")}`);
+      if (subgoal.facts.length > 0 && !buildOwner) {
+        lines.push(`  facts: ${subgoal.facts.slice(0, routingOwner ? 3 : 2).map((item: string) => shortenText(item, 120)).join(" | ")}`);
       }
       if (subgoal.openQuestions.length > 0) {
-        lines.push(`  open_questions: ${subgoal.openQuestions.map((item: string) => shortenText(item, 120)).join(" | ")}`);
+        lines.push(`  open_questions: ${subgoal.openQuestions.slice(0, 2).map((item: string) => shortenText(item, 120)).join(" | ")}`);
       }
       if (subgoal.resolvedDecisions.length > 0) {
-        lines.push(`  resolved: ${subgoal.resolvedDecisions.map((item: string) => shortenText(item, 120)).join(" | ")}`);
+        lines.push(`  resolved: ${subgoal.resolvedDecisions.slice(0, buildOwner ? 2 : 3).map((item: string) => shortenText(item, 120)).join(" | ")}`);
       }
       if (subgoal.acceptanceCriteria.length > 0) {
-        lines.push(`  acceptance: ${subgoal.acceptanceCriteria.map((item: string) => shortenText(item, 120)).join(" | ")}`);
+        lines.push(`  acceptance: ${subgoal.acceptanceCriteria.slice(0, 2).map((item: string) => shortenText(item, 120)).join(" | ")}`);
       }
       if (subgoal.relevantFiles.length > 0) {
-        lines.push(`  files: ${subgoal.relevantFiles.join(", ")}`);
+        lines.push(`  files: ${subgoal.relevantFiles.slice(0, buildOwner ? 6 : 4).join(", ")}`);
       }
       if (subgoal.nextAction) {
         lines.push(`  next_action: ${shortenText(subgoal.nextAction, 140)}`);

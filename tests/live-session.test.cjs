@@ -473,6 +473,55 @@ test("coordinator build handoff for a new resolved slice keeps the implementer t
   assert.deepEqual(coordinationEvent.metadata?.targetAgentIds, ["implementer_1"]);
 });
 
+test("coordinator cannot emit a targeted coordination message to a reviewer who does not listen to the coordination channel", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-coordinator-reviewer-target-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  const session = new LiveSession({
+    config,
+    goal: "coordination reviewer routing regression",
+    title: "coordination reviewer routing regression",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+  });
+
+  session.initializeAgents();
+
+  applyTurnResult(session, "coordinator_1", {
+    shouldReply: true,
+    workingNotes: [],
+    teamMessages: [{
+      content: "Please audit sg-1 now.",
+      targetAgentId: "reviewer_1",
+      targetAgentIds: ["reviewer_1"],
+      subgoalIds: ["sg-1"],
+    }],
+    subgoalUpdates: [],
+    completion: "continue",
+    rawText: "",
+    runtimeDiagnostics: {
+      sawFileChange: false,
+      sawPolicyWriteBlock: false,
+      sawBroadDataLoad: false,
+      sawBroadOutputDump: false,
+    },
+  }, 1, null);
+
+  assert.deepEqual(session.agents.get("coordinator_1").snapshot.teamMessages, []);
+  const invalidCoordination = session.recentEvents.find((event) =>
+    event.sender === "coordinator_1" &&
+    event.channel === "coordination" &&
+    /audit sg-1/i.test(event.content),
+  );
+  assert.equal(invalidCoordination, undefined);
+});
+
 test("self-originated coordinator stale conflicts still target the coordinator instead of broadcasting", async (t) => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-self-conflict-routing-"));
   const previousCwd = process.cwd();
@@ -543,4 +592,71 @@ test("self-originated coordinator stale conflicts still target the coordinator i
   const conflictEvent = [...session.recentEvents].reverse().find((event) => event.sender === "system");
   assert.ok(conflictEvent, "expected a system conflict event");
   assert.deepEqual(conflictEvent.metadata?.targetAgentIds, ["coordinator_1"]);
+});
+
+test("restored stopped sessions keep their stopped status until explicitly resumed", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-stopped-session-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  const session = new LiveSession({
+    config,
+    goal: "stopped session restore regression",
+    title: "stopped session restore regression",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+    snapshot: {
+      id: "saved-stopped-session",
+      title: "saved stopped session",
+      goal: "saved stopped session",
+      workspaceName: config.workspaces[0].name,
+      workspacePath: config.workspaces[0].path,
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:01.000Z",
+      status: "stopped",
+      isLive: false,
+      eventCount: 0,
+      subgoalRevision: 0,
+      agentCount: 1,
+      selectedAgentId: "researcher_1",
+      agents: [{
+        id: "researcher_1",
+        name: "researcher_1",
+        brief: "Research",
+        publishChannel: "research",
+        model: null,
+        modelReasoningEffort: null,
+        status: "stopped",
+        turnCount: 3,
+        lastConsumedSequence: 0,
+        lastSeenSubgoalRevision: 0,
+        lastSeenActionableSignature: null,
+        lastSeenRoutingSignature: null,
+        pendingSignals: 0,
+        waitingForInput: false,
+        lastPrompt: "",
+        lastInput: "",
+        lastError: "",
+        lastResponseAt: null,
+        completion: "continue",
+        workingNotes: [],
+        teamMessages: [],
+        stdoutTail: "",
+        stderrTail: "",
+        lastUsage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+        totalUsage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      }],
+      recentEvents: [],
+      subgoals: [],
+      totalUsage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+    },
+  });
+
+  assert.equal(session.snapshot(false).status, "stopped");
+  assert.equal(session.snapshot(false).isLive, false);
 });

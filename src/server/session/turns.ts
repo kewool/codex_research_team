@@ -103,6 +103,11 @@ function hasTargetedOperatorRequest(agent: any): boolean {
   return operatorEvents.some((event: any) => extractTargetAgentIds(event?.metadata).includes(agent.preset.id));
 }
 
+function ownsAnyStage(agent: any, stages: string[]): boolean {
+  const ownedStages = Array.isArray(agent?.preset?.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
+  return stages.some((stage) => ownedStages.includes(stage));
+}
+
 export async function drainAgent(session: any, agentId: string): Promise<void> {
   const agent = session.agents.get(agentId);
   if (!agent || agent.draining || agent.snapshot.status === "error" || agent.snapshot.status === "starting" || agent.snapshot.status === "stopped") {
@@ -129,19 +134,32 @@ export async function drainAgent(session: any, agentId: string): Promise<void> {
   session.updateAgentSnapshot(agentId, { status: "running" });
   const transcript = session.buildTranscript(agent, digest);
   const digestSummary = buildTriggerSummary(digest);
-  const triggerSummary = [
-    "Goal board overview:",
-    session.buildGoalBoardSummary(agent),
-    "",
-    "Relevant subgoal memory for you:",
-    session.buildRelevantSubgoalSummary(agent),
-    "",
-    "Actionable subgoals for you:",
-    session.buildActionableSubgoalSummary(agent),
-    "",
-    "Message triggers for this turn:",
-    digestSummary || "(no new message triggers)",
-  ].join("\n");
+  const ownsRoutingStages = ownsAnyStage(agent, ["ready_for_build", "blocked"]);
+  const triggerSections = ownsRoutingStages
+    ? [
+        "Goal board overview:",
+        session.buildGoalBoardSummary(agent),
+        "",
+        "Relevant subgoal memory for you:",
+        session.buildRelevantSubgoalSummary(agent, digest),
+        "",
+        "Actionable subgoals for you:",
+        session.buildActionableSubgoalSummary(agent),
+        "",
+        "Message triggers for this turn:",
+        digestSummary || "(no new message triggers)",
+      ]
+    : [
+        "Relevant subgoal memory for you:",
+        session.buildRelevantSubgoalSummary(agent, digest),
+        "",
+        "Actionable subgoals for you:",
+        session.buildActionableSubgoalSummary(agent),
+        "",
+        "Message triggers for this turn:",
+        digestSummary || "(no new message triggers)",
+      ];
+  const triggerSummary = triggerSections.join("\n");
 
   try {
     const result = await agent.process.runTurn(session.goal, transcript, triggerSummary);
@@ -251,6 +269,7 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
   if (!shouldSuppressObsoleteTurn) {
     agent.snapshot.lastSeenSubgoalRevision = session.subgoalRevision;
     agent.snapshot.lastSeenActionableSignature = session.actionableSubgoalSignature(agent);
+    agent.snapshot.lastSeenRoutingSignature = session.routingAttentionSignature(agent);
   }
   const allowedTargetSet = new Set(
     (Array.isArray(agent.preset.policy.allowedTargetAgentIds) ? agent.preset.policy.allowedTargetAgentIds : [])
@@ -280,6 +299,7 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
     !requestedStages.has("researching");
   const materializeTeamMessage = (message: any): any => {
     const effectiveSubgoalIds = session.resolveDirectedMessageSubgoalIds(message, referencedSubgoalIds);
+    const hadExplicitTargets = normalizeDirectedMessageTargets(message).length > 0;
     const normalizedTargetAgentIds = [...new Set(
       normalizeDirectedMessageTargets(message)
         .map((value) => String(value ?? "").trim())
@@ -305,11 +325,18 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
       if (!target) {
         return false;
       }
+      const listensToChannel = Array.isArray(target.preset.listenChannels) && target.preset.listenChannels.includes(agent.preset.publishChannel);
+      if (!listensToChannel) {
+        return false;
+      }
       if (!session.requiresGoalBoardOwnership(target)) {
         return true;
       }
       return session.goalBoardNeedsAttention(target);
     });
+    if (hadExplicitTargets && effectiveTargetAgentIds.length === 0) {
+      return null;
+    }
     return {
       content: message.content,
       ...(effectiveTargetAgentIds.length === 1 ? { targetAgentId: effectiveTargetAgentIds[0] } : {}),
@@ -318,7 +345,9 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
     };
   };
   let effectiveTeamMessages = normalizedResult.shouldReply && !shouldSuppressObsoleteTurn
-    ? rawTeamMessages.map((message) => materializeTeamMessage(message))
+    ? rawTeamMessages
+        .map((message) => materializeTeamMessage(message))
+        .filter(Boolean)
     : [];
   if (
     session.isDiscoveryOwner(agentId) &&

@@ -175,6 +175,7 @@ export interface AgentSnapshot {
   lastConsumedSequence: number;
   lastSeenSubgoalRevision: number;
   lastSeenActionableSignature: string | null;
+  lastSeenRoutingSignature: string | null;
   pendingSignals: number;
   waitingForInput: boolean;
   lastPrompt: string;

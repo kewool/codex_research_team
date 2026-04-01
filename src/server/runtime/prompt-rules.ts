@@ -19,19 +19,11 @@ export function workspaceGuardrailLines(workspacePath: string): string[] {
   const normalizedWorkspacePath = normalizePath(workspacePath);
   return [
     `- Your allowed working scope is the selected workspace only: ${normalizedWorkspacePath}. Treat paths outside this workspace as out-of-scope.`,
-    "- The runtime may permit real filesystem writes so you can modify the selected workspace directly. Treat that as execution capability for this workspace only, not permission to inspect or modify unrelated files.",
-    "- Do not create, modify, delete, or publish files outside the selected workspace.",
-    "- Do not introduce or normalize repo-root output trees such as exports/, release/, publish/, or other sibling directories.",
-    "- If existing workspace code tries to write outside the selected workspace, do not implement or preserve that behavior. Treat it as a workflow risk to report and keep outputs workspace-relative instead.",
-    "- Do not use synthetic write probes as proof that the workspace is blocked. If you already have an actionable workspace-local task, prefer the normal edit/apply path first.",
-    "- Do not open, print, or dump raw binary/media files directly. Treat audio, wav, mp3, image, and other large binaries as opaque assets unless a specific tool is required.",
-    "- Prefer metadata, filenames, directory listings, and targeted text/code reads over broad workspace scans.",
-    "- Treat large structured data files and logs as expensive context. Do not fully load or print them by default; prefer schema/header checks, row counts, targeted filters, sampled slices, or narrow aggregations first.",
-    "- Do not materialize full stream/chat datasets into memory by default with helpers like load_chat_log, pandas.read_csv, or csv.DictReader over the entire file. Only do that after smaller probes prove it is necessary for the current subgoal.",
-    "- Do not run full-dataset pipeline paths like ChatHighlightDetector, HighlightRescorer, or ShortsGenerator against project-scale assets by default. Prefer smaller fixtures, bounded slices, or existing regressions first.",
-    "- Reuse already-established aggregates from the transcript or goal board instead of recomputing the same full-file statistics on later turns.",
-    "- Avoid generated artifacts and scratch directories such as tmp_*, output folders, caches, or derived stems unless they are the explicit subject of the turn.",
-    "- Do not repeatedly reread unchanged large files just to restate prior findings. Reuse the transcript and current trigger as the primary context.",
+    "- Use filesystem writes only for this workspace. Do not create, modify, delete, or publish files outside it, and keep outputs workspace-relative.",
+    "- Do not treat synthetic write probes as proof that the workspace is blocked; prefer the normal edit/apply path for actionable work.",
+    "- Do not open or dump raw binary/media files directly.",
+    "- Prefer targeted reads and small samples over broad scans, full structured-data loads, or repeated rereads of unchanged large files.",
+    "- Reuse already-established aggregates from the transcript or goal board instead of recomputing them.",
   ];
 }
 
@@ -49,4 +41,35 @@ export function routingGuidanceLines(agent: AgentPreset, allAgents: AgentPreset[
     lines.push(`- If you target another agent, you may only target these agent ids: ${allowedTargets.join(", ")}.`);
   }
   return lines;
+}
+
+function ownsAnyStage(agent: AgentPreset, stages: string[]): boolean {
+  const ownedStages = Array.isArray(agent.policy?.ownedStages) ? agent.policy.ownedStages : [];
+  return stages.some((stage) => ownedStages.includes(stage));
+}
+
+export function roleSpecificPromptLines(agent: AgentPreset): string[] {
+  if (ownsAnyStage(agent, ["ready_for_build", "blocked"])) {
+    return [
+      "- You are the routing owner. Keep the full board coherent, merge or reroute only when the actual contract changes, and avoid repeating the same handoff when routing is unchanged.",
+    ];
+  }
+  if (ownsAnyStage(agent, ["building"])) {
+    return [
+      "- Start from the subgoal's relevantFiles and the directly related implementation/test files. Expand outward only when the current card cannot be resolved from that local slice.",
+      "- If one file starts carrying too many responsibilities, split or extract it as part of the implementation instead of letting the card sprawl further.",
+    ];
+  }
+  if (ownsAnyStage(agent, ["ready_for_review"])) {
+    return [
+      "- Audit the subgoal's relevantFiles, changed files, and directly related tests first. Only widen the review scope when the local evidence is insufficient.",
+    ];
+  }
+  if (ownsAnyStage(agent, ["open", "researching"])) {
+    return [
+      "- Stay on your current research card or direct targets. Do not reread unrelated disputed cards unless the trigger explicitly points to them.",
+      "- Prefer narrow probes, existing artifacts, and append-only evidence over broad rediscovery of the same topic.",
+    ];
+  }
+  return [];
 }

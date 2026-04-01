@@ -37,6 +37,7 @@ function createRuntimeAgent(preset, extra = {}) {
       lastConsumedSequence: 0,
       lastSeenSubgoalRevision: 0,
       lastSeenActionableSignature: null,
+      lastSeenRoutingSignature: null,
       pendingSignals: 0,
       waitingForInput: false,
       lastPrompt: "",

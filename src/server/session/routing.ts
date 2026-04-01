@@ -110,11 +110,16 @@ export function shouldDeferAgent(session: any, agent: any): boolean {
 
 export function transcriptEventLimit(session: any, agent: any): number {
   const configured = Math.max(1, Number(session.config.defaults.historyTail || 0) || 1);
-  return Math.min(configured, 6);
+  const ownedStages = Array.isArray(agent.preset.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
+  const ownsRoutingStages = ownedStages.includes("ready_for_build") || ownedStages.includes("blocked");
+  const ownsImplementationStages = ownedStages.includes("building") || ownedStages.includes("ready_for_review");
+  return Math.min(configured, ownsRoutingStages ? 6 : ownsImplementationStages ? 3 : 4);
 }
 
 export function transcriptCharLimit(session: any, agent: any): number {
-  return 170;
+  const ownedStages = Array.isArray(agent.preset.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
+  const ownsRoutingStages = ownedStages.includes("ready_for_build") || ownedStages.includes("blocked");
+  return ownsRoutingStages ? 170 : 140;
 }
 
 export function transcriptChannels(session: any, agent: any): Set<string> {

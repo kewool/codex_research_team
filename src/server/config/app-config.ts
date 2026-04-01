@@ -167,7 +167,7 @@ function applyDefaultTargetPolicies(agents: AgentPreset[]): AgentPreset[] {
       continue;
     }
     if (ownedStages.includes("ready_for_build") || ownedStages.includes("blocked")) {
-      agent.policy.allowedTargetAgentIds = normalizeChannelList([...researchAgentIds, ...buildOwnerIds, ...reviewOwnerIds]);
+      agent.policy.allowedTargetAgentIds = normalizeChannelList([...researchAgentIds, ...buildOwnerIds]);
       continue;
     }
     if (ownedStages.includes("building")) {
@@ -326,6 +326,7 @@ function defaultAgents(defaults: AppDefaults): AgentPreset[] {
           "Treat decisionState as a hard gate: only move a subgoal to building when its decisionState is resolved. If the contract is still disputed, keep it in researching or ready_for_build and name the unresolved question.",
           "When research converges, move only the narrowest executable slice from ready_for_build to building and assign it to the current build owner with a concrete handoff.",
           "Do not target a build owner for queued ready_for_build work. Target the build owner only after the subgoal is moved to building and assigned to that owner.",
+          "Do not target review owners directly from coordination messages. Reviewers act on implementer review handoffs or operator intervention, not on the coordination channel.",
           "Do not keep reissuing the same routing handoff when the subgoal stage, assignee, and next action are unchanged. If routing is unchanged, stay quiet or send only a short note with shouldReply=false.",
           "Do not push every promising research branch into building at once. Leave additional buildable work in ready_for_build so researchers can keep refining it while implementation proceeds.",
           "Keep the goal board compact. Merge overlapping cards by marking the source subgoal mergedIntoSubgoalId=the canonical target instead of destructively deleting history.",
