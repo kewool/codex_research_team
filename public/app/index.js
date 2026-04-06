@@ -15,6 +15,7 @@ const state = {
     selectedAgentId: null,
     selectedAgentTab: "notes",
     sessionData: {},
+    sessionUi: {},
     sessionScroll: {
         windowY: 0,
         anchors: {},

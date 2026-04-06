@@ -30,6 +30,8 @@ function addBaseSubgoal(session, overrides = {}) {
     activeConflict: false,
     lastConflictAt: null,
     lastConflictSummary: null,
+    evidenceRevision: 0,
+    pendingEvidence: [],
     ...overrides,
   });
 }
@@ -67,8 +69,13 @@ test("applySubgoalUpdates creates subgoals, reuses exact topic keys, and archive
     addFacts: ["second finding"],
   }]);
   assert.deepEqual(result.changedIds, ["sg-1"]);
+  assert.deepEqual(result.stateChangedIds, []);
+  assert.deepEqual(result.evidenceChangedIds, ["sg-1"]);
   assert.equal(session.subgoals.length, 1);
-  assert.deepEqual(session.subgoals[0].facts, ["timing drifts", "second finding"]);
+  assert.deepEqual(session.subgoals[0].facts, ["timing drifts"]);
+  assert.equal(session.subgoals[0].evidenceRevision, 1);
+  assert.equal(session.subgoals[0].pendingEvidence.length, 1);
+  assert.deepEqual(session.subgoals[0].pendingEvidence[0].facts, ["second finding"]);
 
   result = subgoals.applySubgoalUpdates(session, "researcher_1", [{
     title: "Chat ranking",
@@ -88,6 +95,55 @@ test("applySubgoalUpdates creates subgoals, reuses exact topic keys, and archive
   assert.equal(session.subgoals[1].mergedIntoSubgoalId, "sg-1");
   assert.equal(Boolean(session.subgoals[1].archivedAt), true);
   assert.equal(subgoals.canonicalSubgoalForId(session, "sg-2").id, "sg-1");
+});
+
+test("research card creator becomes the canonical owner and only that owner sees it as actionable", () => {
+  const session = createSessionFixture();
+
+  const result = subgoals.applySubgoalUpdates(session, "researcher_1", [{
+    title: "Archive provenance",
+    topicKey: "archive-provenance",
+    summary: "Check archive provenance",
+    stage: "researching",
+  }]);
+
+  assert.deepEqual(result.changedIds, ["sg-1"]);
+  assert.equal(session.subgoals[0].assigneeAgentId, "researcher_1");
+});
+
+test("canonical owner can merge pending evidence into the research card", () => {
+  const session = createSessionFixture();
+  addBaseSubgoal(session, {
+    assigneeAgentId: "researcher_1",
+    updatedBy: "researcher_1",
+    facts: ["initial fact"],
+  });
+
+  subgoals.applySubgoalUpdates(session, "researcher_2", [{
+    id: "sg-1",
+    expectedRevision: 1,
+    summary: "second opinion",
+    addFacts: ["second fact"],
+    addOpenQuestions: ["does the shard match?"],
+  }]);
+
+  assert.equal(session.subgoals[0].pendingEvidence.length, 1);
+  assert.equal(session.subgoals[0].revision, 1);
+
+  const merged = subgoals.applySubgoalUpdates(session, "researcher_1", [{
+    id: "sg-1",
+    expectedRevision: 1,
+    summary: "merged canonical summary",
+    addFacts: ["merged fact"],
+    decisionState: "resolved",
+    stage: "ready_for_build",
+  }]);
+
+  assert.deepEqual(merged.stateChangedIds, ["sg-1"]);
+  assert.equal(session.subgoals[0].pendingEvidence.length, 0);
+  assert.equal(session.subgoals[0].summary, "merged canonical summary");
+  assert.deepEqual(session.subgoals[0].facts, ["initial fact", "merged fact"]);
+  assert.equal(session.subgoals[0].stage, "ready_for_build");
 });
 
 test("applySubgoalUpdates records stale conflicts and normalizes build ownership", () => {
@@ -121,6 +177,64 @@ test("applySubgoalUpdates records stale conflicts and normalizes build ownership
   assert.equal(created.stage, "ready_for_build");
   assert.equal(created.assigneeAgentId, "coordinator_1");
   assert.equal(createBuild.blockedBuildPromotion, true);
+});
+
+test("researchers cannot clear an active conflict on a shared research card", () => {
+  const session = createSessionFixture();
+  addBaseSubgoal(session, {
+    revision: 5,
+    stage: "researching",
+    decisionState: "disputed",
+    assigneeAgentId: "researcher_1",
+    activeConflict: true,
+    lastConflictAt: "2026-03-28T00:05:00.000Z",
+    lastConflictSummary: "Conflict on sg-1: stale research update",
+    conflictCount: 3,
+  });
+
+  const result = subgoals.applySubgoalUpdates(session, "researcher_3", [{
+    id: "sg-1",
+    expectedRevision: 5,
+    addFacts: ["new supporting evidence"],
+    summary: "updated summary from researcher",
+    decisionState: "resolved",
+  }]);
+
+  assert.deepEqual(result.conflicts, []);
+  assert.equal(session.subgoals[0].activeConflict, true);
+  assert.equal(session.subgoals[0].lastConflictSummary, "Conflict on sg-1: stale research update");
+  assert.equal(session.subgoals[0].conflictCount, 3);
+  assert.deepEqual(session.subgoals[0].facts, []);
+  assert.equal(session.subgoals[0].pendingEvidence.length, 1);
+  assert.equal(session.subgoals[0].pendingEvidence[0].summary, "updated summary from researcher");
+  assert.deepEqual(session.subgoals[0].pendingEvidence[0].facts, ["new supporting evidence"]);
+});
+
+test("coordinators can clear an active conflict while updating the card", () => {
+  const session = createSessionFixture();
+  addBaseSubgoal(session, {
+    revision: 5,
+    stage: "researching",
+    decisionState: "disputed",
+    activeConflict: true,
+    lastConflictAt: "2026-03-28T00:05:00.000Z",
+    lastConflictSummary: "Conflict on sg-1: stale research update",
+    conflictCount: 3,
+  });
+
+  const result = subgoals.applySubgoalUpdates(session, "coordinator_1", [{
+    id: "sg-1",
+    expectedRevision: 5,
+    summary: "coordinator reviewed the conflict and kept the card in research",
+    decisionState: "resolved",
+    stage: "ready_for_build",
+  }]);
+
+  assert.deepEqual(result.conflicts, []);
+  assert.equal(session.subgoals[0].activeConflict, false);
+  assert.equal(session.subgoals[0].lastConflictSummary, null);
+  assert.equal(session.subgoals[0].stage, "ready_for_build");
+  assert.equal(session.subgoals[0].decisionState, "resolved");
 });
 
 test("coordinator can create a resolved build slice directly in building for the implementer", () => {

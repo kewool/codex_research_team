@@ -1150,6 +1150,65 @@ label {
   overflow-wrap: anywhere;
 }
 
+.subgoal-evidence-block {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.1rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.subgoal-evidence-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.subgoal-evidence-entry {
+  display: grid;
+  gap: 0.28rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 0.7rem;
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.subgoal-evidence-entry header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.subgoal-evidence-entry header strong {
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.subgoal-evidence-entry header small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.subgoal-evidence-field {
+  display: grid;
+  gap: 0.08rem;
+}
+
+.subgoal-evidence-field strong {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.subgoal-evidence-field span {
+  font-size: 0.82rem;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
 .subgoal-conflict-text {
   color: #9a3412;
 }

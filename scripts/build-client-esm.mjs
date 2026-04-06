@@ -56,8 +56,26 @@ function rewriteRelativeImports(code) {
     .join("\n");
 }
 
-rmSync(resolve(outputRoot, "app"), { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
-rmSync(resolve(outputRoot, "app.js"), { force: true, maxRetries: 8, retryDelay: 50 });
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function removeWithRetry(targetPath, options, retries = 12) {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      rmSync(targetPath, options);
+      return;
+    } catch (error) {
+      if (attempt === retries || !["ENOTEMPTY", "EPERM", "EBUSY"].includes(error?.code)) {
+        throw error;
+      }
+      sleep(50 * (attempt + 1));
+    }
+  }
+}
+
+removeWithRetry(resolve(outputRoot, "app"), { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+removeWithRetry(resolve(outputRoot, "app.js"), { force: true, maxRetries: 8, retryDelay: 50 });
 
 for (const sourcePath of listTsFiles(sourceRoot)) {
   const relativePath = relative(sourceRoot, sourcePath).replace(/\\/g, "/");

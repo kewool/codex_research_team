@@ -1,7 +1,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { createSessionActionTools } = require("../dist/client/app/session-actions.js");
+const {
+  createSessionActionTools,
+  shouldTriggerBottomLoad,
+} = require("../dist/client/app/session-actions.js");
 
 function createHarness(overrides = {}) {
   const commandInput = { value: "send this" };
@@ -17,6 +20,7 @@ function createHarness(overrides = {}) {
   };
   const state = {
     stream: overrides.stream ?? null,
+    sessionUi: {},
   };
   const session = overrides.session ?? { id: "session-1", isLive: true };
   const deps = {
@@ -95,4 +99,28 @@ test("sendSessionCommand rebinds the stream when reviving a saved idle session",
 
   assert.equal(calls.bindSessionStream, 1);
   assert.deepEqual(calls.loadSessionFeed, [["session-1", { reset: true, force: true }]]);
+});
+
+test("shouldTriggerBottomLoad fires once until the user scrolls away from the bottom", () => {
+  const cache = {
+    loading: false,
+    hasMore: true,
+    bottomLoadLocked: false,
+  };
+  const element = {
+    scrollTop: 880,
+    clientHeight: 120,
+    scrollHeight: 1000,
+  };
+
+  assert.equal(shouldTriggerBottomLoad(cache, element), true);
+  assert.equal(cache.bottomLoadLocked, true);
+  assert.equal(shouldTriggerBottomLoad(cache, element), false);
+
+  element.scrollTop = 640;
+  assert.equal(shouldTriggerBottomLoad(cache, element), false);
+  assert.equal(cache.bottomLoadLocked, false);
+
+  element.scrollTop = 881;
+  assert.equal(shouldTriggerBottomLoad(cache, element), true);
 });

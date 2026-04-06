@@ -1,3 +1,21 @@
+export function distanceFromBottom(element) {
+    return Math.max(0, element.scrollHeight - element.clientHeight - element.scrollTop);
+}
+export function shouldTriggerBottomLoad(cache, element, threshold = 120) {
+    const nearBottom = distanceFromBottom(element) <= threshold;
+    if (!nearBottom) {
+        cache.bottomLoadLocked = false;
+        return false;
+    }
+    if (cache.loading || !cache.hasMore) {
+        return false;
+    }
+    if (cache.bottomLoadLocked) {
+        return false;
+    }
+    cache.bottomLoadLocked = true;
+    return true;
+}
 export function createSessionActionTools(deps) {
     const { state, currentSession, currentAgentTab, historyKindForTab, feedCache, agentHistoryCache, saveElementScrollAnchor, loadSessionFeed, loadAgentHistory, loadVisibleAgentHistory, setFlash, clearFlash, api, qs, upsertSession, refreshState, bindSessionStream, render, } = deps;
     async function sendSessionCommand(channel) {
@@ -115,15 +133,25 @@ export function createSessionActionTools(deps) {
                 render();
             };
         });
+        document.querySelectorAll("[data-subgoal-archive]").forEach((details) => {
+            if (details.dataset.archiveBound === "1") {
+                return;
+            }
+            details.dataset.archiveBound = "1";
+            details.addEventListener("toggle", () => {
+                const sessionId = details.dataset.sessionId || session.id;
+                if (!state.sessionUi[sessionId]) {
+                    state.sessionUi[sessionId] = {};
+                }
+                state.sessionUi[sessionId].mergedTopicsOpen = details.open;
+            });
+        });
         const feedList = document.querySelector("[data-feed-list]");
         if (feedList && feedList.dataset.historyBound !== "1") {
             feedList.dataset.historyBound = "1";
             feedList.addEventListener("scroll", () => {
                 const cache = feedCache(session.id);
-                if (cache.loading || !cache.hasMore) {
-                    return;
-                }
-                if (feedList.scrollTop + feedList.clientHeight >= feedList.scrollHeight - 120) {
+                if (shouldTriggerBottomLoad(cache, feedList)) {
                     saveElementScrollAnchor(feedList, "append");
                     void withGuard(loadSessionFeed(session.id));
                 }
@@ -139,10 +167,7 @@ export function createSessionActionTools(deps) {
                     return;
                 }
                 const cache = agentHistoryCache(session.id, agentId, kind);
-                if (cache.loading || !cache.hasMore) {
-                    return;
-                }
-                if (historyList.scrollTop + historyList.clientHeight >= historyList.scrollHeight - 120) {
+                if (shouldTriggerBottomLoad(cache, historyList)) {
                     void withGuard(loadAgentHistory(session.id, agentId, kind));
                 }
             }, { passive: true });

@@ -9,6 +9,7 @@ export function createSessionCacheTools(deps) {
             overflowBackfill: false,
             loaded: false,
             loading: false,
+            bottomLoadLocked: false,
             lastLoadedBefore: null,
             error: null,
         };
@@ -56,6 +57,7 @@ export function createSessionCacheTools(deps) {
         cache.hasMore = Boolean(cache.serverHasMore || cache.overflowBackfill);
         if (!cache.hasMore) {
             cache.nextBefore = null;
+            cache.bottomLoadLocked = false;
         }
     }
     function refreshPageCursor(cache) {
@@ -89,6 +91,7 @@ export function createSessionCacheTools(deps) {
             cache.overflowBackfill = false;
             cache.loaded = false;
             cache.lastLoadedBefore = null;
+            cache.bottomLoadLocked = false;
         }
         const before = options.reset ? null : cache.nextBefore;
         const requestCursor = before == null ? "__latest__" : String(before);
@@ -137,6 +140,7 @@ export function createSessionCacheTools(deps) {
             cache.overflowBackfill = false;
             cache.loaded = false;
             cache.lastLoadedBefore = null;
+            cache.bottomLoadLocked = false;
         }
         const before = options.reset ? null : cache.nextBefore;
         const requestCursor = before == null ? "__latest__" : String(before);

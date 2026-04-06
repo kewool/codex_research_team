@@ -129,6 +129,10 @@ export function canMutateSubgoal(session: any, agentId: string, existing: any): 
   if (coordinationOwnerIds(session).includes(agentId)) {
     return true;
   }
+  if (existing.stage === "open" || existing.stage === "researching") {
+    const ownerAgentId = researchOwnerAgentId(session, existing);
+    return ownerAgentId ? ownerAgentId === agentId : agentOwnsStage(session, agentId, existing.stage);
+  }
   if (existing.assigneeAgentId) {
     return existing.assigneeAgentId === agentId;
   }
@@ -337,6 +341,64 @@ export function deriveSubgoalTitle(session: any, update: any, fallbackId: string
   return update.title || `Untitled ${fallbackId}`;
 }
 
+function shouldPreserveActiveConflict(session: any, agentId: string, existing: any): boolean {
+  return Boolean(existing?.activeConflict) && !canCanonicalizeSubgoal(session, agentId);
+}
+
+export function researchOwnerAgentId(session: any, subgoal: any | null | undefined): string | null {
+  const explicitAssignee = String(subgoal?.assigneeAgentId ?? "").trim();
+  if (explicitAssignee && agentOwnsStage(session, explicitAssignee, subgoal.stage)) {
+    return explicitAssignee;
+  }
+  const updaterId = String(subgoal?.updatedBy ?? "").trim();
+  if (updaterId && agentOwnsStage(session, updaterId, subgoal?.stage ?? "researching")) {
+    return updaterId;
+  }
+  return null;
+}
+
+function buildSubgoalEvidenceEntry(update: any, agentId: string, timestamp: string): any | null {
+  const summary = String(update?.summary ?? "").trim() || null;
+  const nextAction = update?.nextAction !== undefined ? normalizeNextAction(update.nextAction) : null;
+  const facts = normalizeMemoryList(update?.addFacts, SUBGOAL_FACT_LIMIT);
+  const openQuestions = normalizeMemoryList(update?.addOpenQuestions, SUBGOAL_QUESTION_LIMIT);
+  const resolvedDecisions = normalizeMemoryList(update?.addResolvedDecisions, SUBGOAL_DECISION_LIMIT);
+  const acceptanceCriteria = normalizeMemoryList(update?.addAcceptanceCriteria, SUBGOAL_ACCEPTANCE_LIMIT);
+  const relevantFiles = normalizeMemoryList(update?.addRelevantFiles, SUBGOAL_FILE_LIMIT, 120);
+  const proposedStage = update?.stage ? normalizeSubgoalStage(update.stage, "researching") : null;
+  const proposedDecisionState = update?.decisionState ? normalizeDecisionState(update.decisionState, "open") : null;
+  const reopenReason = String(update?.reopenReason ?? "").trim() || null;
+  if (
+    !summary &&
+    facts.length === 0 &&
+    openQuestions.length === 0 &&
+    resolvedDecisions.length === 0 &&
+    acceptanceCriteria.length === 0 &&
+    relevantFiles.length === 0 &&
+    !nextAction &&
+    !proposedStage &&
+    !proposedDecisionState &&
+    !reopenReason
+  ) {
+    return null;
+  }
+  return {
+    id: `evidence-${timestamp}-${agentId}-${Math.random().toString(36).slice(2, 8)}`,
+    timestamp,
+    agentId,
+    summary,
+    facts,
+    openQuestions,
+    resolvedDecisions,
+    acceptanceCriteria,
+    relevantFiles,
+    nextAction,
+    proposedStage,
+    proposedDecisionState,
+    reopenReason,
+  };
+}
+
 export function shouldIgnoreStaleSubgoalUpdate(session: any, existing: any, update: any): boolean {
   if (!update.id) {
     return false;
@@ -487,10 +549,12 @@ export function recordSubgoalConflicts(session: any, conflicts: any[]): string[]
 export function applySubgoalUpdates(session: any, agentId: string, updates: any[] | undefined): any {
   const normalized = Array.isArray(updates) ? updates.map((update) => sanitizeSubgoalUpdate(session, update)).filter(Boolean) : [];
   if (normalized.length === 0) {
-    return { changedIds: [], blockedBuildPromotion: false, conflicts: [] };
+    return { changedIds: [], stateChangedIds: [], evidenceChangedIds: [], blockedBuildPromotion: false, conflicts: [] };
   }
 
   const changedIds = new Set<string>();
+  const stateChangedIds = new Set<string>();
+  const evidenceChangedIds = new Set<string>();
   let blockedBuildPromotion = false;
   const conflicts: any[] = [];
   for (const update of normalized.slice(0, 8)) {
@@ -545,12 +609,30 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
         if (conflict) {
           for (const changedId of recordSubgoalConflicts(session, [conflict])) {
             changedIds.add(changedId);
+            stateChangedIds.add(changedId);
           }
           conflicts.push(conflict);
         }
         continue;
       }
-      if (!canMutateState && !update.addFacts?.length && !update.addOpenQuestions?.length && !update.addResolvedDecisions?.length && !update.addAcceptanceCriteria?.length && !update.addRelevantFiles?.length) {
+      if (!canMutateState) {
+        const evidenceEntry = buildSubgoalEvidenceEntry(update, agentId, timestamp);
+        if (!evidenceEntry) {
+          continue;
+        }
+        session.subgoals[existingIndex] = {
+          ...existing,
+          updatedAt: timestamp,
+          updatedBy: agentId,
+          evidenceRevision: Math.max(0, Number(existing.evidenceRevision || 0)) + 1,
+          pendingEvidence: [...(Array.isArray(existing.pendingEvidence) ? existing.pendingEvidence : []), evidenceEntry],
+          conflictCount: Math.max(0, Number(existing.conflictCount || 0)),
+          activeConflict: shouldPreserveActiveConflict(session, agentId, existing),
+          lastConflictAt: shouldPreserveActiveConflict(session, agentId, existing) ? existing.lastConflictAt ?? timestamp : existing.lastConflictAt ?? null,
+          lastConflictSummary: shouldPreserveActiveConflict(session, agentId, existing) ? existing.lastConflictSummary ?? null : existing.lastConflictSummary ?? null,
+        };
+        changedIds.add(existing.id);
+        evidenceChangedIds.add(existing.id);
         continue;
       }
       const requestedMergeTargetId =
@@ -574,6 +656,7 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
             lastConflictSummary: `Merge into ${mergeTarget.id} deferred until the active ${existing.stage} stage finishes.`,
           };
           changedIds.add(existing.id);
+          stateChangedIds.add(existing.id);
           continue;
         }
         session.subgoalRevision += 1;
@@ -590,21 +673,30 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
           lastConflictSummary: null,
         };
         changedIds.add(existing.id);
+        stateChangedIds.add(existing.id);
         continue;
       }
       session.subgoalRevision += 1;
       const explicitAssignee = canMutateState && update.assigneeAgentId != null
         ? (update.assigneeAgentId && session.agents.has(update.assigneeAgentId) ? update.assigneeAgentId : null)
         : null;
+      const inferredResearchOwner =
+        (requestedStage === "open" || requestedStage === "researching") &&
+        isDiscoveryOwner(session, agentId) &&
+        !existing.assigneeAgentId
+          ? agentId
+          : null;
       const requestedAssignee = explicitAssignee !== null
         ? explicitAssignee
-        : (requestedStage !== existing.stage ? defaultAssigneeForStage(session, requestedStage) : existing.assigneeAgentId);
+        : (requestedStage !== existing.stage
+            ? (defaultAssigneeForStage(session, requestedStage) ?? inferredResearchOwner)
+            : (existing.assigneeAgentId ?? inferredResearchOwner));
       const stage = normalizeStageForAssignee(session, requestedAssignee, requestedStage, existing.id);
       const assigneeAgentId = normalizeAssigneeForStage(
         session,
         explicitAssignee !== null && stage === requestedStage ? explicitAssignee : null,
         stage,
-        stage !== existing.stage ? null : existing.assigneeAgentId,
+        stage !== existing.stage ? inferredResearchOwner : (existing.assigneeAgentId ?? inferredResearchOwner),
       );
       const reopenReason = !canMutateState
         ? existing.lastReopenReason
@@ -616,6 +708,7 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
               ? compactWhitespace(update.summary || existing.summary).slice(0, 220) || null
               : existing.lastReopenReason)
             || null);
+      const preserveActiveConflict = shouldPreserveActiveConflict(session, agentId, existing);
       const inferredFact = !canMutateState && update.summary ? [update.summary] : [];
       session.subgoals[existingIndex] = {
         ...existing,
@@ -638,12 +731,23 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
         updatedAt: timestamp,
         updatedBy: agentId,
         revision: session.subgoalRevision,
+        evidenceRevision: Math.max(0, Number(existing.evidenceRevision || 0)),
+        pendingEvidence: canMutateState ? [] : (Array.isArray(existing.pendingEvidence) ? existing.pendingEvidence : []),
         conflictCount: Math.max(0, Number(existing.conflictCount || 0)),
-        activeConflict: Boolean(buildGateMessage),
-        lastConflictAt: buildGateMessage ? timestamp : (decisionState === "resolved" ? null : existing.lastConflictAt ?? null),
-        lastConflictSummary: buildGateMessage ? buildGateMessage : (decisionState === "resolved" ? null : existing.lastConflictSummary ?? null),
+        activeConflict: preserveActiveConflict ? true : Boolean(buildGateMessage),
+        lastConflictAt: preserveActiveConflict
+          ? (existing.lastConflictAt ?? timestamp)
+          : buildGateMessage
+            ? timestamp
+            : (decisionState === "resolved" ? null : existing.lastConflictAt ?? null),
+        lastConflictSummary: preserveActiveConflict
+          ? (existing.lastConflictSummary ?? buildGateMessage ?? null)
+          : buildGateMessage
+            ? buildGateMessage
+            : (decisionState === "resolved" ? null : existing.lastConflictSummary ?? null),
       };
       changedIds.add(existing.id);
+      stateChangedIds.add(existing.id);
       continue;
     }
 
@@ -689,19 +793,27 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
       stage,
       decisionState,
       lastReopenReason: decisionState === "resolved" ? null : (update.reopenReason || buildGateMessage || (update.summary ? compactWhitespace(update.summary).slice(0, 220) || null : null)),
-      assigneeAgentId: normalizeAssigneeForStage(session, explicitAssignee && stage === requestedStage ? explicitAssignee : null, stage),
+      assigneeAgentId: normalizeAssigneeForStage(
+        session,
+        explicitAssignee && stage === requestedStage ? explicitAssignee : null,
+        stage,
+        (stage === "open" || stage === "researching") && isDiscoveryOwner(session, agentId) ? agentId : null,
+      ),
       mergedIntoSubgoalId: null,
       archivedAt: null,
       archivedBy: null,
       updatedAt: timestamp,
       updatedBy: agentId,
       revision: session.subgoalRevision,
+      evidenceRevision: 0,
+      pendingEvidence: [],
       conflictCount: 0,
       activeConflict: Boolean(buildGateMessage),
       lastConflictAt: null,
       lastConflictSummary: buildGateMessage,
     });
     changedIds.add(id);
+    stateChangedIds.add(id);
   }
   session.subgoals = [...session.subgoals].sort((left: any, right: any) => {
     const leftArchived = isArchivedSubgoal(session, left) ? 1 : 0;
@@ -715,6 +827,8 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
   session.persistSession();
   return {
     changedIds: [...changedIds],
+    stateChangedIds: [...stateChangedIds],
+    evidenceChangedIds: [...evidenceChangedIds],
     blockedBuildPromotion,
     conflicts,
   };

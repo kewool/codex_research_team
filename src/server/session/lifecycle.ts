@@ -35,6 +35,9 @@ export async function activateSession(session: any, mode: "new" | "resume"): Pro
   }
 
   for (const runtime of session.agents.values()) {
+    if (runtime.snapshot.status === "error" || runtime.snapshot.status === "stopped") {
+      continue;
+    }
     void runtime.process
       .start(session.goal)
       .then(() => {
@@ -68,15 +71,26 @@ export function initializeAgents(session: any): void {
           publishChannel: preset.publishChannel,
           model: preset.model ?? session.config.defaults.model ?? restored.model ?? null,
           modelReasoningEffort: preset.modelReasoningEffort ?? session.config.defaults.modelReasoningEffort ?? restored.modelReasoningEffort ?? null,
-          status: "starting",
+          status:
+            restored.status === "error" || restored.status === "stopped"
+              ? restored.status
+              : "starting",
           lastConsumedSequence: Number(restored.lastConsumedSequence ?? session.sequence),
           lastSeenSubgoalRevision: Math.max(0, Number(restored.lastSeenSubgoalRevision ?? session.subgoalRevision ?? 0)),
           lastSeenActionableSignature: typeof restored.lastSeenActionableSignature === "string" ? restored.lastSeenActionableSignature : null,
           lastSeenRoutingSignature: typeof restored.lastSeenRoutingSignature === "string" ? restored.lastSeenRoutingSignature : null,
           pendingSignals: 0,
           waitingForInput: false,
-          lastError: "",
-          completion: restored.completion === "blocked" ? "continue" : restored.completion ?? "continue",
+          lastError:
+            restored.status === "error"
+              ? String(restored.lastError ?? "")
+              : "",
+          completion:
+            restored.status === "error" || restored.status === "stopped"
+              ? restored.completion ?? "continue"
+              : restored.completion === "blocked"
+                ? "continue"
+                : restored.completion ?? "continue",
           teamMessages: Array.isArray(restored.teamMessages)
             ? restored.teamMessages
             : compactWhitespace(restored.teamMessage || "")

@@ -95,3 +95,51 @@ test("SessionManager auto-resumes saved idle sessions without auto-resuming stop
   assert.equal(stoppedSession, null);
   assert.equal(resumedId, null);
 });
+
+test("SessionManager restores boot-preserved sessions as active without explicit resume", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-session-manager-boot-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const configPath = path.join(rootDir, "codex_research_team.config.json");
+  const config = createDefaultConfig(rootDir);
+  saveConfig(config, configPath);
+
+  const preservedFiles = createSessionFiles(config, "Preserved session");
+  const preservedSessionId = path.basename(preservedFiles.root);
+  writeSessionSnapshot(preservedFiles, {
+    id: preservedSessionId,
+    title: "Preserved session",
+    goal: "Preserved session",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+    createdAt: "2026-03-30T00:00:00.000Z",
+    updatedAt: "2026-03-30T00:00:01.000Z",
+    status: "running",
+    isLive: false,
+    resumeOnBoot: true,
+    eventCount: 0,
+    subgoalRevision: 0,
+    agentCount: 2,
+    selectedAgentId: null,
+    agents: [
+      { id: "researcher_1", status: "idle" },
+      { id: "coordinator_1", status: "stopped" },
+    ],
+    recentEvents: [],
+    subgoals: [],
+    totalUsage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+  });
+
+  const manager = new SessionManager(configPath);
+  const restored = manager.getSession(preservedSessionId);
+  assert.ok(restored);
+  assert.equal(restored.snapshot().isLive, true);
+  assert.equal(restored.snapshot().status, "running");
+  const coordinator = restored.snapshot().agents.find((agent) => agent.id === "coordinator_1");
+  assert.equal(coordinator.status, "stopped");
+});

@@ -103,6 +103,20 @@ function hasTargetedOperatorRequest(agent: any): boolean {
   return operatorEvents.some((event: any) => extractTargetAgentIds(event?.metadata).includes(agent.preset.id));
 }
 
+function hasTargetedRequest(agent: any): boolean {
+  const digest = agent?.inFlightDigest;
+  if (!digest) {
+    return false;
+  }
+  const events = [
+    ...(Array.isArray(digest.operatorEvents) ? digest.operatorEvents : []),
+    ...(Array.isArray(digest.directInputs) ? digest.directInputs : []),
+    ...Object.values(digest.channelEvents || {}).flat(),
+    ...(Array.isArray(digest.otherEvents) ? digest.otherEvents : []),
+  ];
+  return events.some((event: any) => extractTargetAgentIds(event?.metadata).includes(agent.preset.id));
+}
+
 function ownsAnyStage(agent: any, stages: string[]): boolean {
   const ownedStages = Array.isArray(agent?.preset?.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
   return stages.some((stage) => ownedStages.includes(stage));
@@ -256,15 +270,17 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
   );
   agent.snapshot.turnCount += 1;
   agent.snapshot.lastConsumedSequence = Math.max(Number(agent.snapshot.lastConsumedSequence || 0), consumedSequence);
+  const obsoleteChangedIds = shouldSuppressObsoleteTurn ? session.recordSubgoalConflicts(obsoleteConflicts) : [];
   const subgoalResult = shouldSuppressObsoleteTurn
-    ? { changedIds: session.recordSubgoalConflicts(obsoleteConflicts), blockedBuildPromotion: false, conflicts: [] }
+    ? { changedIds: obsoleteChangedIds, stateChangedIds: obsoleteChangedIds, evidenceChangedIds: [], blockedBuildPromotion: false, conflicts: [] }
     : session.applySubgoalUpdates(agentId, normalizedResult.subgoalUpdates);
   const changedSubgoalIds = [...new Set([...subgoalResult.changedIds, ...obsoleteConflicts.map((conflict) => conflict.subgoalId)])];
   const conflictOnlyIds = new Set([
     ...subgoalResult.conflicts.map((conflict) => conflict.subgoalId),
     ...obsoleteConflicts.map((conflict) => conflict.subgoalId),
   ]);
-  const actualStateChangeIds = subgoalResult.changedIds.filter((id) => !conflictOnlyIds.has(id));
+  const actualStateChangeIds = (Array.isArray(subgoalResult.stateChangedIds) ? subgoalResult.stateChangedIds : subgoalResult.changedIds)
+    .filter((id) => !conflictOnlyIds.has(id));
   const referencedSubgoalIds = session.referencedSubgoalIds(changedSubgoalIds, normalizedResult.subgoalUpdates, inFlightSubgoalRefs);
   if (!shouldSuppressObsoleteTurn) {
     agent.snapshot.lastSeenSubgoalRevision = session.subgoalRevision;
@@ -376,6 +392,12 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
     !shouldSuppressObsoleteTurn &&
     effectiveTeamMessages.length === 0 &&
     normalizedResult.workingNotes.length > 0;
+  const notesOnlyTargetedReply =
+    requestedReply &&
+    hasTargetedRequest(agent) &&
+    !shouldSuppressObsoleteTurn &&
+    effectiveTeamMessages.length === 0 &&
+    normalizedResult.workingNotes.length > 0;
 
   const baseEventMetadata = {
     agentId,
@@ -405,12 +427,14 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
 
   const statusSignature = notesOnlyOperatorReply
     ? `operator-reply|${agent.preset.id}|turn=${agent.snapshot.turnCount}`
+    : notesOnlyTargetedReply
+      ? `targeted-reply|${agent.preset.id}|turn=${agent.snapshot.turnCount}`
     : statusEventSignature(session, agent, actualStateChangeIds, normalizedResult.completion, subgoalResult.blockedBuildPromotion);
   const shouldPublishStatus =
     normalizedResult.workingNotes.length > 0 &&
     !shouldSuppressObsoleteTurn &&
     (
-      notesOnlyOperatorReply ||
+      notesOnlyTargetedReply ||
       normalizedResult.completion !== "continue" ||
       actualStateChangeIds.length > 0 ||
       subgoalResult.blockedBuildPromotion
@@ -420,6 +444,7 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
     session.publish(agent.preset.name, "status", normalizedResult.workingNotes.join(" | "), {
       ...baseEventMetadata,
       ...(notesOnlyOperatorReply ? { shouldReply: requestedReply, operatorReplyEvent: true } : {}),
+      ...(!notesOnlyOperatorReply && notesOnlyTargetedReply ? { shouldReply: requestedReply, targetedReplyEvent: true } : {}),
       ...(statusSignature ? { statusSignature } : {}),
     });
   }

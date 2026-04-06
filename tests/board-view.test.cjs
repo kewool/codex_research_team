@@ -30,6 +30,8 @@ function pushSubgoal(session, overrides = {}) {
     activeConflict: false,
     lastConflictAt: null,
     lastConflictSummary: null,
+    evidenceRevision: 0,
+    pendingEvidence: [],
     ...overrides,
   });
 }
@@ -159,6 +161,26 @@ test("researchers only see actionable and directly targeted subgoals in relevant
 
   const relevant = boardView.relevantSubgoalsForAgent(session, researcher, digest).map((subgoal) => subgoal.id).sort();
   assert.deepEqual(relevant, ["sg-1", "sg-2"]);
+});
+
+test("only the canonical research owner sees a researching card as actionable", () => {
+  const session = createSessionFixture();
+  pushSubgoal(session, {
+    id: "sg-1",
+    title: "Owned research slice",
+    topicKey: "owned-research-slice",
+    stage: "researching",
+    decisionState: "open",
+    assigneeAgentId: "researcher_1",
+    updatedBy: "researcher_1",
+    revision: 4,
+  });
+
+  const researcher1 = session.agents.get("researcher_1");
+  const researcher2 = session.agents.get("researcher_2");
+
+  assert.deepEqual(boardView.actionableSubgoalsForAgent(session, researcher1).map((subgoal) => subgoal.id), ["sg-1"]);
+  assert.deepEqual(boardView.actionableSubgoalsForAgent(session, researcher2).map((subgoal) => subgoal.id), []);
 });
 
 test("routing owners wake when downstream review work closes and frees the next queue decision", () => {

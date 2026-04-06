@@ -28,6 +28,7 @@ const state = {
   selectedAgentId: null as string | null,
   selectedAgentTab: "notes" as string,
   sessionData: {} as Record<string, any>,
+  sessionUi: {} as Record<string, any>,
   sessionScroll: {
     windowY: 0,
     anchors: {} as Record<string, any>,
@@ -933,7 +934,6 @@ window.addEventListener("scroll", () => {
 window.addEventListener("DOMContentLoaded", () => {
   void withGuard(refreshState());
 });
-
 
 
 

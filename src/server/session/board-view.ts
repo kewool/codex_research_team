@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { extractTargetAgentIds, normalizeDirectedMessageSubgoalIds, shortenText } from "./helpers";
-import { activeSubgoals } from "./subgoals";
+import { activeSubgoals, researchOwnerAgentId } from "./subgoals";
 
 export function actionableSubgoalsForAgent(session: any, agent: any): any[] {
   const ownedStages = Array.isArray(agent.preset.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
@@ -10,6 +10,9 @@ export function actionableSubgoalsForAgent(session: any, agent: any): any[] {
   return activeSubgoals(session).filter((subgoal: any) => {
     if (!ownedStages.includes(subgoal.stage)) {
       return false;
+    }
+    if (subgoal.stage === "open" || subgoal.stage === "researching") {
+      return researchOwnerAgentId(session, subgoal) === agent.preset.id;
     }
     if (subgoal.assigneeAgentId && subgoal.assigneeAgentId !== agent.preset.id) {
       return false;
@@ -30,6 +33,7 @@ export function actionableSubgoalSignature(session: any, agent: any): string | n
       String(subgoal.decisionState ?? "").trim(),
       String(subgoal.assigneeAgentId ?? "-").trim() || "-",
       String(Number(subgoal.revision || 0)),
+      String(Number(subgoal.evidenceRevision || 0)),
     ].join(":"))
     .sort()
     .join("|");
@@ -52,6 +56,7 @@ export function routingAttentionSignature(session: any, agent: any): string | nu
       String(subgoal.decisionState ?? "").trim(),
       String(subgoal.assigneeAgentId ?? "-").trim() || "-",
       String(Number(subgoal.revision || 0)),
+      String(Number(subgoal.evidenceRevision || 0)),
     ].join(":"))
     .sort()
     .join("|");
@@ -165,11 +170,12 @@ export function buildGoalBoardSummary(session: any, agent: any): string {
     .map((subgoal: any) => {
       const assignee = subgoal.assigneeAgentId ? ` assignee=${subgoal.assigneeAgentId}` : "";
       const revision = ` rev=${subgoal.revision}`;
+      const evidence = subgoal.pendingEvidence?.length ? ` evidence=${subgoal.pendingEvidence.length}` : "";
       const decision = ` decision=${subgoal.decisionState}`;
       const focus = actionableIds.has(subgoal.id) ? " focus=true" : "";
       const conflict = subgoal.activeConflict ? ` conflicts=${Math.max(1, Number(subgoal.conflictCount || 0))}` : "";
       const reopen = subgoal.lastReopenReason ? " reopen=true" : "";
-      return `- ${shortenText(subgoal.title, 90)} (${subgoal.id})${revision} [${subgoal.stage}]${decision}${assignee}${focus}${conflict}${reopen}`;
+      return `- ${shortenText(subgoal.title, 90)} (${subgoal.id})${revision} [${subgoal.stage}]${decision}${assignee}${focus}${conflict}${reopen}${evidence}`;
     })
     .join("\n");
 }
@@ -184,8 +190,11 @@ export function buildActionableSubgoalSummary(session: any, agent: any): string 
       const conflict = subgoal.activeConflict && subgoal.lastConflictSummary
         ? ` !! conflict: ${shortenText(subgoal.lastConflictSummary, 120)}`
         : "";
+      const evidence = Array.isArray(subgoal.pendingEvidence) && subgoal.pendingEvidence.length > 0
+        ? ` !! pending_evidence=${subgoal.pendingEvidence.length}`
+        : "";
       const reopen = subgoal.lastReopenReason ? ` reopen=${shortenText(subgoal.lastReopenReason, 100)}` : "";
-      return `- ${shortenText(subgoal.title, 100)} (${subgoal.id}) rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState} :: ${shortenText(subgoal.summary, 140)}${conflict}${reopen}`;
+      return `- ${shortenText(subgoal.title, 100)} (${subgoal.id}) rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState} :: ${shortenText(subgoal.summary, 140)}${conflict}${evidence}${reopen}`;
     })
     .join("\n");
 }
@@ -217,6 +226,17 @@ export function buildRelevantSubgoalSummary(session: any, agent: any, digest: an
       }
       if (subgoal.relevantFiles.length > 0) {
         lines.push(`  files: ${subgoal.relevantFiles.slice(0, buildOwner ? 6 : 4).join(", ")}`);
+      }
+      if (Array.isArray(subgoal.pendingEvidence) && subgoal.pendingEvidence.length > 0) {
+        const recentEvidence = subgoal.pendingEvidence.slice(-2).map((entry: any) => {
+          const parts = [
+            entry.summary ? shortenText(entry.summary, 100) : "",
+            Array.isArray(entry.facts) && entry.facts.length > 0 ? shortenText(entry.facts.join(" | "), 100) : "",
+            entry.reopenReason ? `reopen=${shortenText(entry.reopenReason, 80)}` : "",
+          ].filter(Boolean);
+          return `${entry.agentId}: ${parts.join(" | ")}`;
+        });
+        lines.push(`  pending_evidence(${subgoal.pendingEvidence.length}): ${recentEvidence.join(" || ")}`);
       }
       if (subgoal.nextAction) {
         lines.push(`  next_action: ${shortenText(subgoal.nextAction, 140)}`);

@@ -5,7 +5,7 @@ import { AgentPreset, AgentSnapshot, AgentTurnResult, AppConfig, TokenUsage } fr
 import { AgentFiles, appendAgentHistory } from "../persistence/storage";
 import { ensureParent, nowIso, tailText } from "../lib/utils";
 import { effectiveCodexHomeDir } from "./codex-home";
-import { operatingModeLines, roleSpecificPromptLines, routingGuidanceLines, workspaceGuardrailLines } from "./prompt-rules";
+import { operatingModeLines, roleSpecificPromptLines, routingGuidanceLines, sharedTurnProtocolLines, workspaceGuardrailLines } from "./prompt-rules";
 import {
   hasStructuredResponseEnvelope,
   looksLikeBroadDataLoadCommand,
@@ -111,9 +111,9 @@ export class CodexAgentProcess {
       ...workspaceGuardrailLines(this.workspacePath),
       ...roleSpecificPromptLines(this.agent),
       ...routingGuidanceLines(this.agent, this.config.agents),
+      ...sharedTurnProtocolLines(),
       "- Other agents and the operator will send more messages later in this same session.",
       "- This runtime uses a goal board with subgoals and stage transitions. Do your work through the goal board, not only through free-form team chat.",
-      "- Your outputs are public. Do not reveal private chain-of-thought.",
       "- Runtime note: each turn is executed statelessly from the local transcript, so do not rely on hidden memory from prior Codex turns.",
       "- When you receive a TURN prompt, follow its JSON protocol exactly.",
     ].join("\n\n");
@@ -173,20 +173,7 @@ export class CodexAgentProcess {
       ...workspaceGuardrailLines(this.workspacePath),
       ...roleSpecificPromptLines(this.agent),
       ...routingGuidanceLines(this.agent, this.config.agents),
-      "- Only give public working notes. Do not expose hidden reasoning.",
-      "- The top-level session goal is not itself a subgoal. Create a subgoal only when you can name a concrete research topic, deliverable, or handoff slice.",
-      "- Use subgoalUpdates only when the board state or durable subgoal memory actually changes. Opinions or extra evidence can stay in teamMessages.",
-      "- Prefer topic titles for subgoals and keep topicKey stable in kebab-case for the same topic.",
-      "- If new evidence belongs to a materially different research axis, acceptance contract, deliverable, or downstream owner, create a new subgoal instead of overloading an existing one.",
-      "- If you are not the current assignee or a coordination owner for an existing subgoal, prefer append-only updates instead of changing stage, decisionState, or assignee.",
-      "- Only coordination owners should canonicalize duplicates by setting mergedIntoSubgoalId on the source subgoal. Do not rewrite or delete history in free text.",
-      "- Use decisionState deliberately: open while exploring, disputed when contradictions remain, resolved only when the core contract is settled enough for downstream routing.",
-      "- If you reopen a subgoal because implementation or review changed the assumptions, include reopenReason and set decisionState to disputed.",
-      "- When you update an existing subgoal by id, include expectedRevision from the current Goal board or Actionable subgoals view.",
-      "- Keep each teamMessages entry to one short delta or handoff, split unrelated subgoals into separate messages, and set subgoalIds only for the specific card that message is about.",
-      "- Reply only when you add materially new evidence, a contradiction, or a decision-changing action. Otherwise prefer shouldReply=false and keep completion=\"continue\".",
-      "- Use completion=\"done\" only when your branch is genuinely exhausted until a new goal, operator instruction, implementation change, or targeted request arrives.",
-      "- Use subgoal stages consistently: open/researching for discovery, ready_for_build for routing-ready research, building for active implementation, ready_for_review for audit, done for accepted work, blocked for real blockers.",
+      ...sharedTurnProtocolLines(),
       "Return exactly this shape between the XML tags:",
       "<codex_research_team-response>",
       '{"shouldReply":true,"workingNotes":["short public note"],"teamMessages":[{"content":"research the timestamp source before implementation","targetAgentId":"coordinator_1","targetAgentIds":["coordinator_1"],"subgoalIds":["sg-2"]}],"subgoalUpdates":[{"title":"timing contract","topicKey":"timing-contract","summary":"Define the canonical timing contract before implementation.","addFacts":["Current timing source differs between export paths."],"addRelevantFiles":["src/timing.ts"],"nextAction":"settle the canonical timing source","stage":"researching","decisionState":"open","assigneeAgentId":null,"mergedIntoSubgoalId":null}],"completion":"continue"}',
@@ -339,7 +326,7 @@ export class CodexAgentProcess {
         this.appendStderrChunk(text);
       });
 
-      child.on("exit", (code, signal) => {
+      child.on("close", (code, signal) => {
         if (stdoutBuffer.trim()) {
           this.handleStdoutLine(stdoutBuffer.trim(), agentMessages, runState);
           stdoutBuffer = "";

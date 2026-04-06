@@ -102,6 +102,7 @@ export function createSessionPageRenderers(deps) {
         const activeSubgoals = subgoals.filter((subgoal) => !subgoal.mergedIntoSubgoalId && !subgoal.archivedAt);
         const mergedSubgoals = subgoals.filter((subgoal) => subgoal.mergedIntoSubgoalId || subgoal.archivedAt);
         const subgoalById = new Map(subgoals.map((subgoal) => [String(subgoal.id || ""), subgoal]));
+        const mergedTopicsOpen = Boolean(state.sessionUi?.[session.id]?.mergedTopicsOpen);
         if (activeSubgoals.length === 0 && mergedSubgoals.length === 0) {
             return `<p class="muted">No subgoals yet.</p>`;
         }
@@ -112,8 +113,66 @@ export function createSessionPageRenderers(deps) {
             }
             return `<div class="subgoal-memory-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(values.join(" | "))}</span></div>`;
         };
+        const renderEvidenceEntries = (entries) => {
+            const evidence = Array.isArray(entries)
+                ? entries
+                    .filter((entry) => entry && typeof entry === "object")
+                    .map((entry) => {
+                    const raw = entry;
+                    return ({
+                        agentId: String(raw.agentId || "").trim() || "unknown",
+                        summary: String(raw.summary || "").trim(),
+                        facts: Array.isArray(raw.facts) ? raw.facts.map((item) => String(item ?? "").trim()).filter(Boolean) : [],
+                        openQuestions: Array.isArray(raw.openQuestions) ? raw.openQuestions.map((item) => String(item ?? "").trim()).filter(Boolean) : [],
+                        resolvedDecisions: Array.isArray(raw.resolvedDecisions) ? raw.resolvedDecisions.map((item) => String(item ?? "").trim()).filter(Boolean) : [],
+                        acceptanceCriteria: Array.isArray(raw.acceptanceCriteria) ? raw.acceptanceCriteria.map((item) => String(item ?? "").trim()).filter(Boolean) : [],
+                        relevantFiles: Array.isArray(raw.relevantFiles) ? raw.relevantFiles.map((item) => String(item ?? "").trim()).filter(Boolean) : [],
+                        nextAction: String(raw.nextAction || "").trim(),
+                        reopenReason: String(raw.reopenReason || "").trim(),
+                        timestamp: String(raw.timestamp || "").trim(),
+                    });
+                })
+                : [];
+            if (evidence.length === 0) {
+                return "";
+            }
+            const renderEvidenceField = (label, values) => {
+                const text = Array.isArray(values) ? values.filter(Boolean).join(" | ") : String(values || "").trim();
+                if (!text) {
+                    return "";
+                }
+                return `<div class="subgoal-evidence-field"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(text)}</span></div>`;
+            };
+            return `
+        <div class="subgoal-evidence-block">
+          <div class="subgoal-memory-row">
+            <strong>Pending Evidence</strong>
+            <span>${escapeHtml(String(evidence.length))} queued</span>
+          </div>
+          <div class="subgoal-evidence-list">
+            ${evidence.map((entry) => `
+              <article class="subgoal-evidence-entry">
+                <header>
+                  <strong>${escapeHtml(entry.agentId)}</strong>
+                  ${entry.timestamp ? `<small>${escapeHtml(entry.timestamp)}</small>` : ""}
+                </header>
+                ${renderEvidenceField("Summary", entry.summary)}
+                ${renderEvidenceField("Facts", entry.facts)}
+                ${renderEvidenceField("Open", entry.openQuestions)}
+                ${renderEvidenceField("Resolved", entry.resolvedDecisions)}
+                ${renderEvidenceField("Acceptance", entry.acceptanceCriteria)}
+                ${renderEvidenceField("Files", entry.relevantFiles)}
+                ${renderEvidenceField("Next", entry.nextAction)}
+                ${renderEvidenceField("Reopen", entry.reopenReason)}
+              </article>
+            `).join("")}
+          </div>
+        </div>
+      `;
+        };
         const renderSubgoalCard = (subgoal, archived = false) => {
             const mergedTarget = subgoal.mergedIntoSubgoalId ? subgoalById.get(String(subgoal.mergedIntoSubgoalId)) : null;
+            const pendingEvidenceCount = Array.isArray(subgoal.pendingEvidence) ? subgoal.pendingEvidence.length : 0;
             return `
         <article class="subgoal-card ${subgoal.activeConflict ? "conflict" : ""} ${archived ? "archived" : ""}" data-stage="${escapeHtml(String(subgoal.stage || "").toLowerCase())}">
           <header>
@@ -124,6 +183,7 @@ export function createSessionPageRenderers(deps) {
             <div class="subgoal-card-badges">
               ${subgoal.activeConflict ? `<span class="feed-badge conflict">conflict</span>` : ""}
               ${archived ? `<span class="feed-badge">merged</span>` : ""}
+              ${pendingEvidenceCount > 0 ? `<span class="feed-badge">evidence ${escapeHtml(String(pendingEvidenceCount))}</span>` : ""}
               <span class="status-pill ${escapeHtml(String(subgoal.stage || "open"))}">${escapeHtml(subgoal.stage || "open")}</span>
               <span class="feed-badge">${escapeHtml(String(subgoal.decisionState || "open"))}</span>
             </div>
@@ -136,6 +196,7 @@ export function createSessionPageRenderers(deps) {
             ${renderMemoryList("Acceptance", subgoal.acceptanceCriteria)}
             ${renderMemoryList("Files", subgoal.relevantFiles)}
             ${subgoal.nextAction ? `<div class="subgoal-memory-row"><strong>Next</strong><span>${escapeHtml(String(subgoal.nextAction || ""))}</span></div>` : ""}
+            ${renderEvidenceEntries(subgoal.pendingEvidence)}
           </div>
           ${subgoal.activeConflict && subgoal.lastConflictSummary ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastConflictSummary)}</small>` : ""}
           ${subgoal.lastReopenReason ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastReopenReason)}</small>` : ""}
@@ -151,7 +212,7 @@ export function createSessionPageRenderers(deps) {
         </div>
       ` : `<p class="muted">No active subgoals yet.</p>`}
       ${mergedSubgoals.length > 0 ? `
-        <details class="subgoal-archive">
+        <details class="subgoal-archive" data-subgoal-archive="1" data-session-id="${escapeHtml(String(session.id || ""))}" ${mergedTopicsOpen ? "open" : ""}>
           <summary>Merged topics ${escapeHtml(String(mergedSubgoals.length))}</summary>
           <div class="subgoal-board subgoal-board-archived" data-subgoal-count="${escapeHtml(String(mergedSubgoals.length))}" data-scroll-key="${escapeHtml(`subgoal-board:${session.id}:archived`)}" data-scroll-mode="append">
             ${mergedSubgoals.map((subgoal) => renderSubgoalCard(subgoal, true)).join("")}

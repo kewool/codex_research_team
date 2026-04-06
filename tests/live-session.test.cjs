@@ -241,6 +241,71 @@ test("notes-only reply to a targeted operator question is still published to the
   assert.equal(statusEvent.metadata?.shouldReply, true);
 });
 
+test("notes-only reply to a targeted research message is still published to the feed", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-targeted-reply-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  const session = new LiveSession({
+    config,
+    goal: "targeted reply regression",
+    title: "targeted reply regression",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+  });
+
+  session.initializeAgents();
+  const coordinator = session.agents.get("coordinator_1");
+  assert.ok(coordinator);
+  coordinator.inFlightDigest = {
+    latestGoal: null,
+    operatorEvents: [],
+    directInputs: [],
+    channelEvents: {
+      research: [{
+        sequence: 1,
+        sender: "researcher_2",
+        channel: "research",
+        content: "sg-11 stays disputed; confirm the route is unchanged.",
+        metadata: { targetAgentId: "coordinator_1", targetAgentIds: ["coordinator_1"], subgoalIds: ["sg-11"] },
+        timestamp: "2026-04-01T00:00:00.000Z",
+      }],
+    },
+    otherEvents: [],
+    totalCount: 1,
+    maxSequence: 1,
+  };
+
+  applyTurnResult(session, "coordinator_1", {
+    shouldReply: true,
+    workingNotes: ["sg-11 stays disputed and routing remains unchanged."],
+    teamMessages: [],
+    subgoalUpdates: [],
+    completion: "continue",
+    rawText: "",
+    runtimeDiagnostics: {
+      sawFileChange: false,
+      sawPolicyWriteBlock: false,
+      sawBroadDataLoad: false,
+      sawBroadOutputDump: false,
+    },
+  }, 1, null);
+
+  const statusEvent = [...session.recentEvents].reverse().find((event) =>
+    event.sender === "coordinator_1" &&
+    event.channel === "status" &&
+    /routing remains unchanged/i.test(event.content),
+  );
+  assert.ok(statusEvent, "notes-only targeted reply should be visible in the feed");
+  assert.equal(statusEvent.metadata?.targetedReplyEvent, true);
+  assert.equal(statusEvent.metadata?.shouldReply, true);
+});
+
 test("reviewer upstream reopen becomes a coordinator-only message instead of directly reopening the card", async (t) => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-reviewer-reopen-"));
   const previousCwd = process.cwd();
@@ -659,4 +724,114 @@ test("restored stopped sessions keep their stopped status until explicitly resum
 
   assert.equal(session.snapshot(false).status, "stopped");
   assert.equal(session.snapshot(false).isLive, false);
+});
+
+test("hibernate preserves session status, marks only running agents stopped, and marks the session for boot restore", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-hibernate-session-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  const session = new LiveSession({
+    config,
+    goal: "hibernate preserve regression",
+    title: "hibernate preserve regression",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+  });
+
+  session.initializeAgents();
+  session.status = "running";
+  const researcher = session.agents.get("researcher_1");
+  const coordinator = session.agents.get("coordinator_1");
+  assert.ok(researcher);
+  assert.ok(coordinator);
+  researcher.snapshot.status = "running";
+  coordinator.snapshot.status = "idle";
+  researcher.process.stop = async () => {};
+  coordinator.process.stop = async () => {};
+
+  await session.hibernate();
+  const snapshot = session.snapshot(false);
+  const savedResearcher = snapshot.agents.find((agent) => agent.id === "researcher_1");
+  const savedCoordinator = snapshot.agents.find((agent) => agent.id === "coordinator_1");
+  assert.equal(snapshot.status, "running");
+  assert.equal(snapshot.resumeOnBoot, true);
+  assert.equal(savedResearcher.status, "stopped");
+  assert.equal(savedCoordinator.status, "idle");
+});
+
+test("restored error agents keep their error status across resume", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-error-session-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  const session = new LiveSession({
+    config,
+    goal: "error session restore regression",
+    title: "error session restore regression",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+    snapshot: {
+      id: "saved-error-session",
+      title: "saved error session",
+      goal: "saved error session",
+      workspaceName: config.workspaces[0].name,
+      workspacePath: config.workspaces[0].path,
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:01.000Z",
+      status: "idle",
+      isLive: false,
+      eventCount: 0,
+      subgoalRevision: 0,
+      agentCount: 1,
+      selectedAgentId: "researcher_1",
+      agents: [{
+        id: "researcher_1",
+        name: "researcher_1",
+        brief: "Research",
+        publishChannel: "research",
+        model: null,
+        modelReasoningEffort: null,
+        status: "error",
+        turnCount: 3,
+        lastConsumedSequence: 0,
+        lastSeenSubgoalRevision: 0,
+        lastSeenActionableSignature: null,
+        lastSeenRoutingSignature: null,
+        pendingSignals: 0,
+        waitingForInput: false,
+        lastPrompt: "",
+        lastInput: "",
+        lastError: "Codex turn failed: example",
+        lastResponseAt: null,
+        completion: "blocked",
+        workingNotes: ["Codex turn failed: example"],
+        teamMessages: [],
+        stdoutTail: "",
+        stderrTail: "",
+        lastUsage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+        totalUsage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      }],
+      recentEvents: [],
+      subgoals: [],
+      totalUsage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+    },
+  });
+
+  await session.resume();
+  const restored = session.snapshot();
+  assert.equal(restored.status, "running");
+  assert.equal(restored.agents[0].status, "error");
+  assert.equal(restored.agents[0].completion, "blocked");
+  assert.equal(restored.agents[0].lastError, "Codex turn failed: example");
 });

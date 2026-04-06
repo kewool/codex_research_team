@@ -45,6 +45,7 @@ export class SessionManager {
     this.configPath = configPath;
     this.config = loadConfig(configPath);
     syncProjectCodexHome(this.config);
+    this.restorePreservedSessions();
   }
 
   snapshot(): RootSnapshot {
@@ -149,6 +150,26 @@ export class SessionManager {
     }
     await session.hibernate();
     this.activeSessions.delete(id);
+  }
+
+  private restorePreservedSessions(): void {
+    for (const snapshot of loadSavedSessions(this.config)) {
+      if (!snapshot?.id || snapshot.status === "stopped" || !snapshot.resumeOnBoot) {
+        continue;
+      }
+      const session = new LiveSession({
+        config: this.config,
+        goal: snapshot.goal,
+        title: snapshot.title,
+        workspaceName: snapshot.workspaceName,
+        workspacePath: snapshot.workspacePath,
+        files: openSessionFiles(this.config, snapshot.id),
+        snapshot,
+      });
+      session.initializeAgents();
+      session.rebuildPendingDigestsFromHistory();
+      this.activeSessions.set(session.id, session);
+    }
   }
 
   updateConfig(next: AppConfig): AppConfig {

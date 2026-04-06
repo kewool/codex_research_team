@@ -111,6 +111,24 @@ export interface SessionSubgoal {
   activeConflict: boolean;
   lastConflictAt: string | null;
   lastConflictSummary: string | null;
+  evidenceRevision: number;
+  pendingEvidence: SubgoalEvidence[];
+}
+
+export interface SubgoalEvidence {
+  id: string;
+  timestamp: string;
+  agentId: string;
+  summary: string | null;
+  facts: string[];
+  openQuestions: string[];
+  resolvedDecisions: string[];
+  acceptanceCriteria: string[];
+  relevantFiles: string[];
+  nextAction: string | null;
+  proposedStage: SubgoalStage | null;
+  proposedDecisionState: SubgoalDecisionState | null;
+  reopenReason: string | null;
 }
 
 export interface SubgoalUpdate {
@@ -201,6 +219,7 @@ export interface SessionSnapshot {
   updatedAt: string;
   status: SessionStatus;
   isLive: boolean;
+  resumeOnBoot?: boolean;
   eventCount: number;
   subgoalRevision: number;
   agentCount: number;

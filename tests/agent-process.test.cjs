@@ -143,6 +143,30 @@ test("runTurn resolves when turn.completed arrives even if the codex child hangs
   assert.ok(Date.now() - start < 2000, "turn should resolve before the helper process exits");
 });
 
+test("runTurn still captures the final response when the codex child exits immediately after a large turn payload", async (t) => {
+  const { process: agentProcess } = createProcessHarness(t);
+  await agentProcess.start("test goal");
+  const helperPath = path.resolve(__dirname, "fixtures", "mock-codex-exit-after-large-turn.cjs");
+  agentProcess.buildCommandSpec = () => ({
+    file: process.execPath,
+    args: [helperPath],
+    windowsVerbatimArguments: false,
+    shell: false,
+  });
+
+  const result = await Promise.race([
+    agentProcess.runTurn("test goal", "transcript", "trigger"),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("runTurn timed out")), 5000)),
+  ]);
+
+  assert.equal(result.shouldReply, true);
+  assert.equal(result.completion, "continue");
+  assert.equal(result.teamMessages.length, 1);
+  assert.ok(Array.isArray(result.workingNotes));
+  assert.equal(result.workingNotes.length, 1);
+  assert.ok(result.workingNotes[0].length >= 512 * 1024);
+});
+
 test("stop kills the spawned process tree", async (t) => {
   const { rootDir, process: agentProcess } = createProcessHarness(t);
   await agentProcess.start("test goal");

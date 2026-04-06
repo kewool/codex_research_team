@@ -176,6 +176,8 @@ interface RuntimeAgent {
 
 interface SubgoalUpdateResult {
   changedIds: string[];
+  stateChangedIds: string[];
+  evidenceChangedIds: string[];
   blockedBuildPromotion: boolean;
   conflicts: StaleSubgoalConflict[];
 }
@@ -217,6 +219,7 @@ export class LiveSession {
   private readonly subscribers = new Set<(payload: unknown) => void>();
   private updatedAt = nowIso();
   private historySerial = 0;
+  private resumeOnBoot = false;
 
   constructor(options: {
     config: AppConfig;
@@ -272,10 +275,31 @@ export class LiveSession {
             activeConflict: Boolean(subgoal?.activeConflict),
             lastConflictAt: subgoal?.lastConflictAt ? String(subgoal.lastConflictAt) : null,
             lastConflictSummary: subgoal?.lastConflictSummary ? String(subgoal.lastConflictSummary) : null,
+            evidenceRevision: Math.max(0, Number(subgoal?.evidenceRevision || 0)),
+            pendingEvidence: Array.isArray(subgoal?.pendingEvidence)
+              ? subgoal.pendingEvidence
+                  .filter((entry: any) => entry && typeof entry === "object")
+                  .map((entry: any) => ({
+                    id: String(entry?.id ?? "").trim() || `evidence-${Math.random().toString(36).slice(2, 8)}`,
+                    timestamp: String(entry?.timestamp ?? nowIso()),
+                    agentId: String(entry?.agentId ?? "").trim() || "unknown",
+                    summary: entry?.summary ? String(entry.summary).trim() : null,
+                    facts: normalizeMemoryList(entry?.facts, SUBGOAL_FACT_LIMIT),
+                    openQuestions: normalizeMemoryList(entry?.openQuestions, SUBGOAL_QUESTION_LIMIT),
+                    resolvedDecisions: normalizeMemoryList(entry?.resolvedDecisions, SUBGOAL_DECISION_LIMIT),
+                    acceptanceCriteria: normalizeMemoryList(entry?.acceptanceCriteria, SUBGOAL_ACCEPTANCE_LIMIT),
+                    relevantFiles: normalizeMemoryList(entry?.relevantFiles, SUBGOAL_FILE_LIMIT, 120),
+                    nextAction: normalizeNextAction(entry?.nextAction),
+                    proposedStage: entry?.proposedStage ? normalizeSubgoalStage(entry.proposedStage, "researching") : null,
+                    proposedDecisionState: entry?.proposedDecisionState ? normalizeDecisionState(entry.proposedDecisionState, "open") : null,
+                    reopenReason: entry?.reopenReason ? String(entry.reopenReason).trim() : null,
+                  }))
+              : [],
           }))
         : [];
       this.updatedAt = String(options.snapshot.updatedAt || this.updatedAt);
       this.status = options.snapshot.status || this.status;
+      this.resumeOnBoot = Boolean(options.snapshot.resumeOnBoot);
       this.historySerial = Math.max(0, this.sequence * 10);
     }
   }
@@ -332,6 +356,7 @@ export class LiveSession {
       updatedAt: this.updatedAt,
       status: this.status,
       isLive,
+      resumeOnBoot: this.resumeOnBoot,
       eventCount: this.sequence,
       subgoalRevision: this.subgoalRevision,
       agentCount: this.agents.size,
@@ -378,6 +403,7 @@ export class LiveSession {
   }
 
   async stop(): Promise<void> {
+    this.resumeOnBoot = false;
     this.status = "stopping";
     this.persistSession();
     for (const agent of this.agents.values()) {
@@ -394,6 +420,7 @@ export class LiveSession {
   }
 
   async hibernate(): Promise<void> {
+    const previousSessionStatus = this.status;
     for (const agent of this.agents.values()) {
       if (agent.drainTimer) {
         clearTimeout(agent.drainTimer);
@@ -408,15 +435,19 @@ export class LiveSession {
       agent.retryCount = 0;
       agent.interruptReason = null;
       await agent.process.stop();
+      const previousAgentStatus = String(agent.snapshot.status ?? "").trim();
       this.updateAgentSnapshot(agent.preset.id, {
-        status: "idle",
+        status:
+          previousAgentStatus === "running" || previousAgentStatus === "starting"
+            ? "stopped"
+            : agent.snapshot.status,
         waitingForInput: false,
-        ...(agent.snapshot.status === "running" || agent.snapshot.status === "starting"
-          ? { completion: "continue" }
-          : {}),
       });
     }
-    this.status = "idle";
+    this.status = previousSessionStatus === "starting" || previousSessionStatus === "stopping"
+      ? "running"
+      : previousSessionStatus;
+    this.resumeOnBoot = true;
     this.persistSession();
     this.emit({ type: "session", sessionId: this.id, snapshot: this.snapshot(false) });
   }

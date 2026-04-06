@@ -43,6 +43,18 @@ export function routingGuidanceLines(agent: AgentPreset, allAgents: AgentPreset[
   return lines;
 }
 
+export function sharedTurnProtocolLines(): string[] {
+  return [
+    "- Only give public working notes. Do not expose hidden reasoning.",
+    "- The top-level session goal is not itself a subgoal. Create or update subgoals only for durable topic, contract, or handoff changes.",
+    "- Use subgoalUpdates only when canonical board state or durable subgoal memory changed. Commentary, objections, and extra evidence can stay in teamMessages.",
+    "- Split unrelated handoffs into separate teamMessages and set subgoalIds only for the specific card each message is about.",
+    "- Prefer shouldReply=false when you learned nothing decision-changing and no action owner needs to change.",
+    "- Use completion=\"done\" only when your branch is genuinely exhausted until a new goal, operator instruction, implementation change, or targeted request arrives.",
+    "- Use subgoal stages consistently: open/researching for discovery, ready_for_build for routing-ready research, building for active implementation, ready_for_review for audit, done for accepted work, blocked for real blockers.",
+  ];
+}
+
 function ownsAnyStage(agent: AgentPreset, stages: string[]): boolean {
   const ownedStages = Array.isArray(agent.policy?.ownedStages) ? agent.policy.ownedStages : [];
   return stages.some((stage) => ownedStages.includes(stage));
