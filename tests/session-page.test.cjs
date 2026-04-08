@@ -28,6 +28,19 @@ function createRendererHarness(options = {}) {
         conflictCount: 0,
         activeConflict: false,
         lastConflictSummary: null,
+        conflictHistory: [
+          {
+            timestamp: "2026-04-03T00:30:00.000Z",
+            reason: "stale_update",
+            agentId: "researcher_3",
+            summary: "researcher_3 proposed researching on rev 1 but the board is now rev 2",
+            expectedRevision: 1,
+            currentRevision: 2,
+            requestedStage: "researching",
+            currentStage: "researching",
+            currentAssigneeAgentId: "researcher_1",
+          },
+        ],
         lastReopenReason: null,
         facts: [],
         openQuestions: [],
@@ -35,6 +48,8 @@ function createRendererHarness(options = {}) {
         acceptanceCriteria: [],
         relevantFiles: [],
         nextAction: "",
+        lastMergedEvidenceAt: "2026-04-03T00:45:00.000Z",
+        lastMergedEvidenceBy: "researcher_1",
         pendingEvidence: [
           {
             id: "ev-1",
@@ -64,6 +79,7 @@ function createRendererHarness(options = {}) {
         conflictCount: 0,
         activeConflict: false,
         lastConflictSummary: null,
+        conflictHistory: [],
         lastReopenReason: null,
         facts: [],
         openQuestions: [],
@@ -72,6 +88,8 @@ function createRendererHarness(options = {}) {
         relevantFiles: [],
         nextAction: "",
         pendingEvidence: [],
+        lastMergedEvidenceAt: null,
+        lastMergedEvidenceBy: null,
         mergedIntoSubgoalId: "sg-1",
         archivedAt: "2026-04-03T00:00:00.000Z",
       },
@@ -122,6 +140,9 @@ test("renderSessionPage shows pending evidence on subgoal cards", () => {
 
   assert.match(html, /evidence 1/);
   assert.match(html, /Pending Evidence/);
+  assert.match(html, /Conflict History/);
+  assert.match(html, /Last Merge/);
+  assert.match(html, /owner unassigned/);
   assert.match(html, /researcher_2/);
   assert.match(html, /digest mismatch persists/);
   assert.match(html, /archive\/replay_manifest\.json/);

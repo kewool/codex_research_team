@@ -429,7 +429,7 @@ test("mechanical stale conflicts target only the coordinator while reopen sugges
   });
   session.subgoalRevision = 3;
 
-  applyTurnResult(session, "researcher_1", {
+  applyTurnResult(session, "coordinator_1", {
     shouldReply: false,
     workingNotes: [],
     teamMessages: [],
@@ -451,7 +451,7 @@ test("mechanical stale conflicts target only the coordinator while reopen sugges
   const firstConflict = [...session.recentEvents].reverse().find((event) => event.sender === "system");
   assert.deepEqual(firstConflict.metadata?.targetAgentIds, ["coordinator_1"]);
 
-  applyTurnResult(session, "researcher_1", {
+  applyTurnResult(session, "coordinator_1", {
     shouldReply: false,
     workingNotes: [],
     teamMessages: [],

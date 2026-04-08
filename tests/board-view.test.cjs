@@ -30,8 +30,11 @@ function pushSubgoal(session, overrides = {}) {
     activeConflict: false,
     lastConflictAt: null,
     lastConflictSummary: null,
+    conflictHistory: [],
     evidenceRevision: 0,
     pendingEvidence: [],
+    lastMergedEvidenceAt: null,
+    lastMergedEvidenceBy: null,
     ...overrides,
   });
 }

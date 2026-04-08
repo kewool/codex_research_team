@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { nowIso } from "../lib/utils";
 import { appendSessionEvent } from "../persistence/storage";
-import { DRAIN_DEBOUNCE_MS, extractTargetAgentIds, RECENT_EVENT_LIMIT } from "./helpers";
+import { DRAIN_DEBOUNCE_MS, extractTargetAgentIds, RECENT_EVENT_LIMIT, shortenText } from "./helpers";
 import { emptyPendingDigest, hasPendingDigest, mergePendingDigest, readSessionEvents } from "./digest";
 
 export function publishEvent(session: any, sender: string, channel: string, content: string, metadata?: Record<string, unknown>): void {
@@ -59,6 +59,22 @@ export function routeEvent(session: any, event: any): void {
     }
     agent.pendingDigest = mergePendingDigest(agent.pendingDigest, event);
     agent.snapshot.pendingSignals = agent.pendingDigest.totalCount;
+    const subgoalIds = Array.isArray(event?.metadata?.subgoalIds)
+      ? event.metadata.subgoalIds.map((value: unknown) => String(value ?? "").trim()).filter(Boolean)
+      : [];
+    const targetIds = extractTargetAgentIds(event?.metadata);
+    const timestamp = nowIso();
+    const summaryParts = [
+      `#${event.sequence}`,
+      `${event.sender} -> ${event.channel}`,
+      targetIds.length > 0 ? `target=${targetIds.join(",")}` : "",
+      subgoalIds.length > 0 ? `subgoals=${subgoalIds.join(",")}` : "",
+      shortenText(String(event.content ?? "").trim(), 120),
+    ].filter(Boolean);
+    agent.snapshot.lastWakeReason = `routed event ${summaryParts.join(" | ")}`;
+    agent.snapshot.lastWakeAt = timestamp;
+    agent.snapshot.lastRoutedEventSummary = summaryParts.join(" | ");
+    agent.snapshot.lastRoutedEventAt = timestamp;
     session.persistAgent(agent.preset.id);
     session.scheduleAgentDrain(agent.preset.id);
   }

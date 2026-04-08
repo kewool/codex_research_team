@@ -168,14 +168,16 @@ export function buildGoalBoardSummary(session: any, agent: any): string {
   const actionableIds = new Set(actionableSubgoalsForAgent(session, agent).map((subgoal: any) => subgoal.id));
   return subgoals
     .map((subgoal: any) => {
-      const assignee = subgoal.assigneeAgentId ? ` assignee=${subgoal.assigneeAgentId}` : "";
+      const ownerId = subgoal.assigneeAgentId || "-";
+      const owner = ` owner=${ownerId}`;
       const revision = ` rev=${subgoal.revision}`;
       const evidence = subgoal.pendingEvidence?.length ? ` evidence=${subgoal.pendingEvidence.length}` : "";
       const decision = ` decision=${subgoal.decisionState}`;
       const focus = actionableIds.has(subgoal.id) ? " focus=true" : "";
       const conflict = subgoal.activeConflict ? ` conflicts=${Math.max(1, Number(subgoal.conflictCount || 0))}` : "";
       const reopen = subgoal.lastReopenReason ? " reopen=true" : "";
-      return `- ${shortenText(subgoal.title, 90)} (${subgoal.id})${revision} [${subgoal.stage}]${decision}${assignee}${focus}${conflict}${reopen}${evidence}`;
+      const merged = subgoal.lastMergedEvidenceAt ? ` merged=${subgoal.lastMergedEvidenceAt}` : "";
+      return `- ${shortenText(subgoal.title, 90)} (${subgoal.id})${revision} [${subgoal.stage}]${decision}${owner}${focus}${conflict}${reopen}${evidence}${merged}`;
     })
     .join("\n");
 }
@@ -194,7 +196,9 @@ export function buildActionableSubgoalSummary(session: any, agent: any): string 
         ? ` !! pending_evidence=${subgoal.pendingEvidence.length}`
         : "";
       const reopen = subgoal.lastReopenReason ? ` reopen=${shortenText(subgoal.lastReopenReason, 100)}` : "";
-      return `- ${shortenText(subgoal.title, 100)} (${subgoal.id}) rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState} :: ${shortenText(subgoal.summary, 140)}${conflict}${evidence}${reopen}`;
+      const owner = ` owner=${subgoal.assigneeAgentId || "-"}`;
+      const merged = subgoal.lastMergedEvidenceAt ? ` merged=${shortenText(`${subgoal.lastMergedEvidenceAt} by ${subgoal.lastMergedEvidenceBy || "unknown"}`, 80)}` : "";
+      return `- ${shortenText(subgoal.title, 100)} (${subgoal.id}) rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState}${owner} :: ${shortenText(subgoal.summary, 140)}${conflict}${evidence}${reopen}${merged}`;
     })
     .join("\n");
 }
@@ -241,11 +245,17 @@ export function buildRelevantSubgoalSummary(session: any, agent: any, digest: an
       if (subgoal.nextAction) {
         lines.push(`  next_action: ${shortenText(subgoal.nextAction, 140)}`);
       }
+      if (subgoal.lastMergedEvidenceAt) {
+        lines.push(`  last_merge: ${shortenText(`${subgoal.lastMergedEvidenceAt} by ${subgoal.lastMergedEvidenceBy || "unknown"}`, 140)}`);
+      }
       if (subgoal.lastReopenReason) {
         lines.push(`  reopen_reason: ${shortenText(subgoal.lastReopenReason, 140)}`);
       }
       if (subgoal.activeConflict && subgoal.lastConflictSummary) {
         lines.push(`  conflict: ${shortenText(subgoal.lastConflictSummary, 140)}`);
+      } else if (Array.isArray(subgoal.conflictHistory) && subgoal.conflictHistory.length > 0) {
+        const latestConflict = subgoal.conflictHistory[subgoal.conflictHistory.length - 1];
+        lines.push(`  recent_conflict: ${shortenText(String(latestConflict.summary || ""), 140)}`);
       }
       return lines.join("\n");
     })
@@ -257,6 +267,12 @@ export function pingGoalBoardOwners(session: any): void {
     if (!goalBoardNeedsAttention(session, agent) || agent.draining || agent.snapshot.status === "starting" || session.status === "stopped") {
       continue;
     }
+    agent.snapshot.lastWakeReason = isRoutingOwner(agent)
+      ? "goal board routing queue changed"
+      : "goal board actionable subgoal changed";
+    agent.snapshot.lastWakeAt = session.updatedAt;
+    session.persistAgent(agent.preset.id);
+    session.persistSession();
     session.scheduleAgentDrain(agent.preset.id, true);
   }
 }

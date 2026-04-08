@@ -152,6 +152,36 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
       }
       return `<div class="subgoal-memory-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(values.join(" | "))}</span></div>`;
     };
+    const renderConflictHistory = (entries: unknown[] | null | undefined): string => {
+      const history = Array.isArray(entries)
+        ? entries.filter((entry) => entry && typeof entry === "object").map((entry) => entry as AnyObject)
+        : [];
+      if (history.length === 0) {
+        return "";
+      }
+      return `
+        <div class="subgoal-evidence-block">
+          <div class="subgoal-memory-row">
+            <strong>Conflict History</strong>
+            <span>${escapeHtml(String(history.length))} recorded</span>
+          </div>
+          <div class="subgoal-evidence-list">
+            ${[...history].reverse().map((entry) => `
+              <article class="subgoal-evidence-entry conflict-history-entry">
+                <header>
+                  <strong>${escapeHtml(String(entry.reason || "conflict"))}</strong>
+                  ${entry.timestamp ? `<small>${escapeHtml(String(entry.timestamp))}</small>` : ""}
+                </header>
+                <div class="subgoal-evidence-field"><strong>By</strong><span>${escapeHtml(String(entry.agentId || "unknown"))}</span></div>
+                ${entry.summary ? `<div class="subgoal-evidence-field"><strong>Summary</strong><span>${escapeHtml(String(entry.summary))}</span></div>` : ""}
+                <div class="subgoal-evidence-field"><strong>Revision</strong><span>${escapeHtml(`${String(entry.expectedRevision || 0)} -> ${String(entry.currentRevision || 0)}`)}</span></div>
+                <div class="subgoal-evidence-field"><strong>Stage</strong><span>${escapeHtml(`${String(entry.requestedStage || "-")} -> ${String(entry.currentStage || "-")}`)}</span></div>
+              </article>
+            `).join("")}
+          </div>
+        </div>
+      `;
+    };
     const renderEvidenceEntries = (entries: unknown[] | null | undefined): string => {
       const evidence = Array.isArray(entries)
         ? entries
@@ -235,12 +265,14 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
             ${renderMemoryList("Acceptance", subgoal.acceptanceCriteria)}
             ${renderMemoryList("Files", subgoal.relevantFiles)}
             ${subgoal.nextAction ? `<div class="subgoal-memory-row"><strong>Next</strong><span>${escapeHtml(String(subgoal.nextAction || ""))}</span></div>` : ""}
+            ${subgoal.lastMergedEvidenceAt ? `<div class="subgoal-memory-row"><strong>Last Merge</strong><span>${escapeHtml(`${String(subgoal.lastMergedEvidenceAt)} by ${String(subgoal.lastMergedEvidenceBy || "unknown")}`)}</span></div>` : ""}
             ${renderEvidenceEntries(subgoal.pendingEvidence)}
+            ${renderConflictHistory(subgoal.conflictHistory)}
           </div>
           ${subgoal.activeConflict && subgoal.lastConflictSummary ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastConflictSummary)}</small>` : ""}
           ${subgoal.lastReopenReason ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastReopenReason)}</small>` : ""}
           ${archived ? `<small class="subgoal-conflict-text">Merged into ${escapeHtml(String(mergedTarget?.title || subgoal.mergedIntoSubgoalId || "canonical subgoal"))}</small>` : ""}
-          <small>${escapeHtml(subgoal.assigneeAgentId ? `assignee ${subgoal.assigneeAgentId}` : "shared")} · rev ${escapeHtml(String(subgoal.revision || 0))}${subgoal.conflictCount ? ` · conflicts ${escapeHtml(String(subgoal.conflictCount))}` : ""}</small>
+          <small>${escapeHtml(subgoal.assigneeAgentId ? `owner ${subgoal.assigneeAgentId}` : "owner unassigned")} · rev ${escapeHtml(String(subgoal.revision || 0))}${subgoal.conflictCount ? ` · conflicts ${escapeHtml(String(subgoal.conflictCount))}` : ""}</small>
         </article>
       `;
     };
@@ -338,6 +370,11 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
           <span><strong>Last Input</strong>${escapeHtml(agent.lastInput || "-")}</span>
           <span><strong>Last Tokens</strong>${escapeHtml(formatTokenUsage(agent.lastUsage))}</span>
           <span><strong>Total Tokens</strong>${escapeHtml(formatTokenUsage(agent.totalUsage))}</span>
+        </div>
+        <div class="agent-meta-bar">
+          <span><strong>Wake</strong>${escapeHtml(agent.lastWakeReason || "-")}</span>
+          <span><strong>Wake At</strong>${escapeHtml(agent.lastWakeAt || "-")}</span>
+          <span><strong>Last Routed</strong>${escapeHtml(agent.lastRoutedEventSummary || "-")}</span>
         </div>
         <div class="tab-strip">
           ${tabs.map(([value, label]) => `<button class="tab-button ${tab === value ? "active" : ""}" data-agent-tab="${value}">${label}</button>`).join("")}

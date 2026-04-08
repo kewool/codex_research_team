@@ -30,8 +30,11 @@ function addBaseSubgoal(session, overrides = {}) {
     activeConflict: false,
     lastConflictAt: null,
     lastConflictSummary: null,
+    conflictHistory: [],
     evidenceRevision: 0,
     pendingEvidence: [],
+    lastMergedEvidenceAt: null,
+    lastMergedEvidenceBy: null,
     ...overrides,
   });
 }
@@ -155,11 +158,10 @@ test("applySubgoalUpdates records stale conflicts and normalizes build ownership
     assigneeAgentId: "coordinator_1",
   });
 
-  const stale = subgoals.applySubgoalUpdates(session, "researcher_1", [{
+  const stale = subgoals.applySubgoalUpdates(session, "coordinator_1", [{
     id: "sg-1",
     expectedRevision: 2,
-    stage: "researching",
-    reopenReason: "old branch",
+    stage: "ready_for_build",
   }]);
   assert.equal(stale.conflicts.length, 1);
   assert.equal(stale.conflicts[0].reason, "stale_update");
@@ -256,6 +258,81 @@ test("coordinator can create a resolved build slice directly in building for the
   assert.equal(result.blockedBuildPromotion, false);
 });
 
+test("non-owner stale research updates become pending evidence instead of stale conflicts", () => {
+  const session = createSessionFixture();
+  addBaseSubgoal(session, {
+    revision: 6,
+    assigneeAgentId: "researcher_1",
+    updatedBy: "researcher_1",
+  });
+
+  const result = subgoals.applySubgoalUpdates(session, "researcher_2", [{
+    id: "sg-1",
+    expectedRevision: 3,
+    stage: "researching",
+    decisionState: "disputed",
+    reopenReason: "new evidence suggests the contract is still wrong",
+    summary: "still seeing archive mismatch in the replay path",
+    addFacts: ["archive digest still mismatches current manifest"],
+  }]);
+
+  assert.deepEqual(result.conflicts, []);
+  assert.deepEqual(result.stateChangedIds, []);
+  assert.deepEqual(result.evidenceChangedIds, ["sg-1"]);
+  assert.equal(session.subgoals[0].pendingEvidence.length, 1);
+  assert.equal(session.subgoals[0].pendingEvidence[0].reopenReason, "new evidence suggests the contract is still wrong");
+  assert.equal(session.subgoals[0].pendingEvidence[0].proposedStage, "researching");
+  assert.equal(session.subgoals[0].conflictCount, 0);
+});
+
+test("owner merge records when pending evidence was last folded into canonical state", () => {
+  const session = createSessionFixture();
+  addBaseSubgoal(session, {
+    assigneeAgentId: "researcher_1",
+    updatedBy: "researcher_1",
+  });
+
+  subgoals.applySubgoalUpdates(session, "researcher_2", [{
+    id: "sg-1",
+    expectedRevision: 1,
+    summary: "needs a canonical merge",
+    addFacts: ["evidence to merge"],
+  }]);
+
+  const result = subgoals.applySubgoalUpdates(session, "researcher_1", [{
+    id: "sg-1",
+    expectedRevision: 1,
+    summary: "owner merged evidence into canonical summary",
+    addFacts: ["canonical fact"],
+  }]);
+
+  assert.deepEqual(result.stateChangedIds, ["sg-1"]);
+  assert.equal(session.subgoals[0].pendingEvidence.length, 0);
+  assert.equal(Boolean(session.subgoals[0].lastMergedEvidenceAt), true);
+  assert.equal(session.subgoals[0].lastMergedEvidenceBy, "researcher_1");
+});
+
+test("recordSubgoalConflicts appends conflict history entries", () => {
+  const session = createSessionFixture();
+  addBaseSubgoal(session, {
+    revision: 8,
+    stage: "ready_for_build",
+    decisionState: "resolved",
+    assigneeAgentId: "coordinator_1",
+  });
+
+  const stale = subgoals.applySubgoalUpdates(session, "coordinator_1", [{
+    id: "sg-1",
+    expectedRevision: 4,
+    stage: "ready_for_build",
+  }]);
+
+  assert.equal(stale.conflicts.length, 1);
+  assert.equal(session.subgoals[0].conflictHistory.length, 1);
+  assert.equal(session.subgoals[0].conflictHistory[0].agentId, "coordinator_1");
+  assert.match(session.subgoals[0].conflictHistory[0].summary, /rev 4/);
+});
+
 test("downstream stale conflicts become reopen suggestions only when a build or review card is pushed upstream", () => {
   const session = createSessionFixture();
   addBaseSubgoal(session, {
@@ -265,7 +342,7 @@ test("downstream stale conflicts become reopen suggestions only when a build or 
     assigneeAgentId: "implementer_1",
   });
 
-  const stale = subgoals.applySubgoalUpdates(session, "researcher_1", [{
+  const stale = subgoals.applySubgoalUpdates(session, "coordinator_1", [{
     id: "sg-1",
     expectedRevision: 3,
     stage: "researching",

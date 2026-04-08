@@ -275,6 +275,27 @@ export class LiveSession {
             activeConflict: Boolean(subgoal?.activeConflict),
             lastConflictAt: subgoal?.lastConflictAt ? String(subgoal.lastConflictAt) : null,
             lastConflictSummary: subgoal?.lastConflictSummary ? String(subgoal.lastConflictSummary) : null,
+            conflictHistory: Array.isArray(subgoal?.conflictHistory)
+              ? subgoal.conflictHistory
+                  .filter((entry: any) => entry && typeof entry === "object")
+                  .map((entry: any) => ({
+                    timestamp: String(entry?.timestamp ?? nowIso()),
+                    reason:
+                      entry?.reason === "obsolete_turn" ||
+                      entry?.reason === "reopen_suggestion" ||
+                      entry?.reason === "done_soft_note" ||
+                      entry?.reason === "done_reopen_suggestion"
+                        ? entry.reason
+                        : "stale_update",
+                    agentId: String(entry?.agentId ?? "").trim() || "unknown",
+                    summary: String(entry?.summary ?? "").trim(),
+                    expectedRevision: Math.max(0, Number(entry?.expectedRevision || 0)),
+                    currentRevision: Math.max(0, Number(entry?.currentRevision || 0)),
+                    requestedStage: normalizeSubgoalStage(entry?.requestedStage, "researching"),
+                    currentStage: normalizeSubgoalStage(entry?.currentStage, "researching"),
+                    currentAssigneeAgentId: String(entry?.currentAssigneeAgentId ?? "").trim() || null,
+                  }))
+              : [],
             evidenceRevision: Math.max(0, Number(subgoal?.evidenceRevision || 0)),
             pendingEvidence: Array.isArray(subgoal?.pendingEvidence)
               ? subgoal.pendingEvidence
@@ -295,6 +316,8 @@ export class LiveSession {
                     reopenReason: entry?.reopenReason ? String(entry.reopenReason).trim() : null,
                   }))
               : [],
+            lastMergedEvidenceAt: subgoal?.lastMergedEvidenceAt ? String(subgoal.lastMergedEvidenceAt) : null,
+            lastMergedEvidenceBy: subgoal?.lastMergedEvidenceBy ? String(subgoal.lastMergedEvidenceBy) : null,
           }))
         : [];
       this.updatedAt = String(options.snapshot.updatedAt || this.updatedAt);

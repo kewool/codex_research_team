@@ -21,6 +21,7 @@ export function restoreFailedInFlightDigest(session: any, agent: any, digest: an
   agent.pendingDigest = combinePendingDigests(digest, agent.pendingDigest);
   agent.snapshot.pendingSignals = agent.pendingDigest.totalCount;
   persistAgent(session, agent.preset.id);
+  persistSession(session);
 }
 
 export function captureAgentStream(session: any, agentId: string, stream: "stdout" | "stderr", text: string): void {
@@ -31,6 +32,7 @@ export function captureAgentStream(session: any, agentId: string, stream: "stdou
   const field = stream === "stdout" ? "stdoutTail" : "stderrTail";
   agent.snapshot[field] = tailText(`${agent.snapshot[field]}${text}`, SNAPSHOT_STREAM_TAIL);
   persistAgent(session, agentId);
+  persistSession(session);
   session.emit({ type: "stream", sessionId: session.id, agentId, stream, text });
 }
 

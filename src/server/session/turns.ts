@@ -423,6 +423,7 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
   });
 
   session.persistAgent(agentId);
+  session.persistSession();
   session.emit({ type: "agent", sessionId: session.id, agent: { ...agent.snapshot } });
 
   const statusSignature = notesOnlyOperatorReply

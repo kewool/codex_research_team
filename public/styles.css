@@ -1191,6 +1191,11 @@ label {
   font-size: 0.72rem;
 }
 
+.conflict-history-entry {
+  background: rgba(217, 119, 6, 0.05);
+  border-color: rgba(217, 119, 6, 0.16);
+}
+
 .subgoal-evidence-field {
   display: grid;
   gap: 0.08rem;

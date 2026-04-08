@@ -86,6 +86,18 @@ export interface SessionEvent {
   metadata?: Record<string, unknown>;
 }
 
+export interface SubgoalConflictRecord {
+  timestamp: string;
+  reason: "stale_update" | "obsolete_turn" | "reopen_suggestion" | "done_soft_note" | "done_reopen_suggestion";
+  agentId: string;
+  summary: string;
+  expectedRevision: number;
+  currentRevision: number;
+  requestedStage: SubgoalStage;
+  currentStage: SubgoalStage;
+  currentAssigneeAgentId: string | null;
+}
+
 export interface SessionSubgoal {
   id: string;
   title: string;
@@ -111,8 +123,11 @@ export interface SessionSubgoal {
   activeConflict: boolean;
   lastConflictAt: string | null;
   lastConflictSummary: string | null;
+  conflictHistory: SubgoalConflictRecord[];
   evidenceRevision: number;
   pendingEvidence: SubgoalEvidence[];
+  lastMergedEvidenceAt: string | null;
+  lastMergedEvidenceBy: string | null;
 }
 
 export interface SubgoalEvidence {
@@ -194,6 +209,10 @@ export interface AgentSnapshot {
   lastSeenSubgoalRevision: number;
   lastSeenActionableSignature: string | null;
   lastSeenRoutingSignature: string | null;
+  lastWakeReason: string | null;
+  lastWakeAt: string | null;
+  lastRoutedEventSummary: string | null;
+  lastRoutedEventAt: string | null;
   pendingSignals: number;
   waitingForInput: boolean;
   lastPrompt: string;
