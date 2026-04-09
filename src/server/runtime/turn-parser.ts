@@ -30,6 +30,7 @@ function normalizeDirectedTeamMessages(parsed: Partial<AgentTurnResult> & { team
       .filter((item) => item && typeof item === "object")
       .map((item) => {
         const record = item as Record<string, unknown>;
+        const content = String(record.content ?? record.message ?? "").trim();
         const parsedTargetAgentIds = normalizeTargetIds(record.targetAgentIds);
         const singleTargetAgentId = String(record.targetAgentId ?? "").trim() || null;
         const targetAgentIds = parsedTargetAgentIds.length > 0
@@ -38,7 +39,7 @@ function normalizeDirectedTeamMessages(parsed: Partial<AgentTurnResult> & { team
             ? [singleTargetAgentId]
             : [];
         return {
-          content: String(record.content ?? "").trim(),
+          content,
           targetAgentId: targetAgentIds.length === 1 ? targetAgentIds[0] : null,
           targetAgentIds,
           ...(Object.prototype.hasOwnProperty.call(record, "subgoalIds")
@@ -73,12 +74,28 @@ function normalizeParsedTurnResult(
   parsed: Partial<AgentTurnResult> & { teamMessage?: string; targetAgentId?: string | null; targetAgentIds?: string[] | null },
   rawText: string,
 ): AgentTurnResult {
+  const normalizeAssigneeAlias = (update: Record<string, unknown>): string | null => {
+    const aliases = [
+      update.assigneeAgentId,
+      update.ownerAgentId,
+      update.assignee,
+      update.owner,
+    ];
+    for (const alias of aliases) {
+      const normalized = String(alias ?? "").trim();
+      if (normalized) {
+        return normalized;
+      }
+    }
+    return null;
+  };
   const teamMessages = normalizeDirectedTeamMessages(parsed);
   const normalizedSubgoalUpdates = Array.isArray(parsed.subgoalUpdates)
     ? parsed.subgoalUpdates
         .filter((item) => item && typeof item === "object")
         .map((item) => {
           const update = item as Record<string, unknown>;
+          const normalizedAssignee = normalizeAssigneeAlias(update);
           return {
             ...(String(update.id ?? "").trim() ? { id: String(update.id).trim() } : {}),
             ...(String(update.subgoalId ?? "").trim() ? { id: String(update.subgoalId).trim() } : {}),
@@ -93,7 +110,7 @@ function normalizeParsedTurnResult(
             ...(Object.prototype.hasOwnProperty.call(update, "nextAction") ? { nextAction: String(update.nextAction ?? "").trim() } : {}),
             ...(String(update.stage ?? "").trim() ? { stage: String(update.stage).trim() } : {}),
             ...(String(update.decisionState ?? "").trim() ? { decisionState: String(update.decisionState).trim() } : {}),
-            ...(Object.prototype.hasOwnProperty.call(update, "assigneeAgentId") ? { assigneeAgentId: update.assigneeAgentId == null ? null : String(update.assigneeAgentId).trim() || null } : {}),
+            ...(normalizedAssignee !== null ? { assigneeAgentId: normalizedAssignee || null } : {}),
             ...(Object.prototype.hasOwnProperty.call(update, "mergedIntoSubgoalId") ? { mergedIntoSubgoalId: update.mergedIntoSubgoalId == null ? null : String(update.mergedIntoSubgoalId).trim() || null } : {}),
             ...(String(update.reopenReason ?? "").trim() ? { reopenReason: String(update.reopenReason).trim() } : {}),
             ...(Object.prototype.hasOwnProperty.call(update, "expectedRevision") ? { expectedRevision: Number(update.expectedRevision) } : {}),

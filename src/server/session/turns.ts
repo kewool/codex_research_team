@@ -117,6 +117,36 @@ function hasTargetedRequest(agent: any): boolean {
   return events.some((event: any) => extractTargetAgentIds(event?.metadata).includes(agent.preset.id));
 }
 
+function hasTargetedCoordinatorOrOwnerMessage(session: any, effectiveTeamMessages: any[]): boolean {
+  if (!Array.isArray(effectiveTeamMessages) || effectiveTeamMessages.length === 0) {
+    return false;
+  }
+  const coordinatorIds = [
+    session.defaultAssigneeForStage("ready_for_build"),
+    session.defaultAssigneeForStage("blocked"),
+  ]
+    .map((value: unknown) => String(value ?? "").trim())
+    .filter(Boolean);
+  return effectiveTeamMessages.some((message) => {
+    const targetIds = normalizeDirectedMessageTargets(message);
+    if (targetIds.length === 0) {
+      return false;
+    }
+    if (targetIds.some((targetId) => coordinatorIds.includes(targetId))) {
+      return true;
+    }
+    const subgoalIds = normalizeDirectedMessageSubgoalIds(message) ?? [];
+    if (subgoalIds.length === 0) {
+      return false;
+    }
+    const ownerIds = subgoalIds
+      .map((subgoalId) => session.canonicalSubgoalForId(subgoalId))
+      .map((subgoal) => String(subgoal?.assigneeAgentId ?? "").trim())
+      .filter(Boolean);
+    return targetIds.some((targetId) => ownerIds.includes(targetId));
+  });
+}
+
 function ownsAnyStage(agent: any, stages: string[]): boolean {
   const ownedStages = Array.isArray(agent?.preset?.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
   return stages.some((stage) => ownedStages.includes(stage));
@@ -272,7 +302,7 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
   agent.snapshot.lastConsumedSequence = Math.max(Number(agent.snapshot.lastConsumedSequence || 0), consumedSequence);
   const obsoleteChangedIds = shouldSuppressObsoleteTurn ? session.recordSubgoalConflicts(obsoleteConflicts) : [];
   const subgoalResult = shouldSuppressObsoleteTurn
-    ? { changedIds: obsoleteChangedIds, stateChangedIds: obsoleteChangedIds, evidenceChangedIds: [], blockedBuildPromotion: false, conflicts: [] }
+    ? { changedIds: obsoleteChangedIds, stateChangedIds: obsoleteChangedIds, discussionChangedIds: [], blockedBuildPromotion: false, conflicts: [] }
     : session.applySubgoalUpdates(agentId, normalizedResult.subgoalUpdates);
   const changedSubgoalIds = [...new Set([...subgoalResult.changedIds, ...obsoleteConflicts.map((conflict) => conflict.subgoalId)])];
   const conflictOnlyIds = new Set([
@@ -365,12 +395,14 @@ export function applyTurnResult(session: any, agentId: string, result: any, cons
         .map((message) => materializeTeamMessage(message))
         .filter(Boolean)
     : [];
+  const hasEscalatedTargetedMessage = hasTargetedCoordinatorOrOwnerMessage(session, effectiveTeamMessages);
   if (
     session.isDiscoveryOwner(agentId) &&
     !session.hasOperatorOverride(agent) &&
     !session.currentTurnHasTargetedRequest(agent) &&
     session.actionableSubgoalsForAgent(agent).length === 0 &&
-    (!Array.isArray(normalizedResult.subgoalUpdates) || normalizedResult.subgoalUpdates.length === 0)
+    (!Array.isArray(normalizedResult.subgoalUpdates) || normalizedResult.subgoalUpdates.length === 0) &&
+    !hasEscalatedTargetedMessage
   ) {
     normalizedResult.shouldReply = false;
     effectiveTeamMessages = [];

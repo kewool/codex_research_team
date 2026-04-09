@@ -155,6 +155,21 @@ export function hasStateMutation(session: any, update: any, existing: any | null
   );
 }
 
+function hasCreateContent(update: any): boolean {
+  return Boolean(
+    String(update?.title ?? "").trim() ||
+    String(update?.topicKey ?? "").trim() ||
+    String(update?.summary ?? "").trim() ||
+    (Array.isArray(update?.addFacts) && update.addFacts.length > 0) ||
+    (Array.isArray(update?.addOpenQuestions) && update.addOpenQuestions.length > 0) ||
+    (Array.isArray(update?.addResolvedDecisions) && update.addResolvedDecisions.length > 0) ||
+    (Array.isArray(update?.addAcceptanceCriteria) && update.addAcceptanceCriteria.length > 0) ||
+    (Array.isArray(update?.addRelevantFiles) && update.addRelevantFiles.length > 0) ||
+    String(update?.nextAction ?? "").trim() ||
+    String(update?.reopenReason ?? "").trim()
+  );
+}
+
 export function normalizeAssigneeForStage(session: any, explicitAssignee: string | null, stage: string, existingAssignee?: string | null): string | null {
   if (explicitAssignee && agentOwnsStage(session, explicitAssignee, stage)) {
     return explicitAssignee;
@@ -380,46 +395,66 @@ export function researchOwnerAgentId(session: any, subgoal: any | null | undefin
   return null;
 }
 
-function buildSubgoalEvidenceEntry(update: any, agentId: string, timestamp: string): any | null {
-  const summary = String(update?.summary ?? "").trim() || null;
-  const nextAction = update?.nextAction !== undefined ? normalizeNextAction(update.nextAction) : null;
+function buildSubgoalDiscussionContent(update: any): string | null {
+  const parts: string[] = [];
+  const summary = compactWhitespace(String(update?.summary ?? ""));
   const facts = normalizeMemoryList(update?.addFacts, SUBGOAL_FACT_LIMIT);
   const openQuestions = normalizeMemoryList(update?.addOpenQuestions, SUBGOAL_QUESTION_LIMIT);
   const resolvedDecisions = normalizeMemoryList(update?.addResolvedDecisions, SUBGOAL_DECISION_LIMIT);
   const acceptanceCriteria = normalizeMemoryList(update?.addAcceptanceCriteria, SUBGOAL_ACCEPTANCE_LIMIT);
   const relevantFiles = normalizeMemoryList(update?.addRelevantFiles, SUBGOAL_FILE_LIMIT, 120);
+  const nextAction = update?.nextAction !== undefined ? normalizeNextAction(update.nextAction) : null;
   const proposedStage = update?.stage ? normalizeSubgoalStage(update.stage, "researching") : null;
   const proposedDecisionState = update?.decisionState ? normalizeDecisionState(update.decisionState, "open") : null;
-  const reopenReason = String(update?.reopenReason ?? "").trim() || null;
-  if (
-    !summary &&
-    facts.length === 0 &&
-    openQuestions.length === 0 &&
-    resolvedDecisions.length === 0 &&
-    acceptanceCriteria.length === 0 &&
-    relevantFiles.length === 0 &&
-    !nextAction &&
-    !proposedStage &&
-    !proposedDecisionState &&
-    !reopenReason
-  ) {
-    return null;
+  const reopenReason = compactWhitespace(String(update?.reopenReason ?? ""));
+
+  if (summary) {
+    parts.push(summary);
   }
-  return {
-    id: `evidence-${timestamp}-${agentId}-${Math.random().toString(36).slice(2, 8)}`,
-    timestamp,
-    agentId,
-    summary,
-    facts,
-    openQuestions,
-    resolvedDecisions,
-    acceptanceCriteria,
-    relevantFiles,
-    nextAction,
-    proposedStage,
-    proposedDecisionState,
-    reopenReason,
-  };
+  if (facts.length > 0) {
+    parts.push(`facts: ${facts.join(" | ")}`);
+  }
+  if (openQuestions.length > 0) {
+    parts.push(`open: ${openQuestions.join(" | ")}`);
+  }
+  if (resolvedDecisions.length > 0) {
+    parts.push(`resolved: ${resolvedDecisions.join(" | ")}`);
+  }
+  if (acceptanceCriteria.length > 0) {
+    parts.push(`acceptance: ${acceptanceCriteria.join(" | ")}`);
+  }
+  if (relevantFiles.length > 0) {
+    parts.push(`files: ${relevantFiles.join(" | ")}`);
+  }
+  if (nextAction) {
+    parts.push(`next: ${nextAction}`);
+  }
+  if (proposedStage) {
+    parts.push(`suggested stage: ${proposedStage}`);
+  }
+  if (proposedDecisionState) {
+    parts.push(`suggested decision: ${proposedDecisionState}`);
+  }
+  if (reopenReason) {
+    parts.push(`reopen: ${reopenReason}`);
+  }
+  const content = compactWhitespace(parts.join(" || "));
+  return content || null;
+}
+
+function appendSubgoalDiscussion(existing: any, agentId: string, timestamp: string, content: string): any[] {
+  const previous = Array.isArray(existing?.discussionMessages)
+    ? existing.discussionMessages.filter((entry: any) => entry && typeof entry === "object")
+    : [];
+  return [
+    ...previous,
+    {
+      id: `discussion-${timestamp}-${agentId}-${Math.random().toString(36).slice(2, 8)}`,
+      timestamp,
+      agentId,
+      content,
+    },
+  ];
 }
 
 export function shouldIgnoreStaleSubgoalUpdate(session: any, existing: any, update: any): boolean {
@@ -570,15 +605,41 @@ export function recordSubgoalConflicts(session: any, conflicts: any[]): string[]
   return [...changedIds];
 }
 
+export function appendSubgoalDiscussionMessage(session: any, subgoalId: string, agentId: string, content: string): { changed: boolean; subgoalId: string | null } {
+  const existing = canonicalSubgoalForId(session, subgoalId);
+  if (!existing || isArchivedSubgoal(session, existing)) {
+    return { changed: false, subgoalId: null };
+  }
+  const trimmedContent = compactWhitespace(String(content ?? ""));
+  if (!trimmedContent) {
+    return { changed: false, subgoalId: existing.id };
+  }
+  const existingIndex = session.subgoals.findIndex((subgoal: any) => subgoal.id === existing.id);
+  if (existingIndex < 0) {
+    return { changed: false, subgoalId: null };
+  }
+  const timestamp = nowIso();
+  session.subgoals[existingIndex] = {
+    ...existing,
+    updatedAt: timestamp,
+    updatedBy: agentId,
+    discussionRevision: Math.max(0, Number(existing.discussionRevision || 0)) + 1,
+    discussionMessages: appendSubgoalDiscussion(existing, agentId, timestamp, trimmedContent),
+  };
+  session.updatedAt = timestamp;
+  session.persistSession();
+  return { changed: true, subgoalId: existing.id };
+}
+
 export function applySubgoalUpdates(session: any, agentId: string, updates: any[] | undefined): any {
   const normalized = Array.isArray(updates) ? updates.map((update) => sanitizeSubgoalUpdate(session, update)).filter(Boolean) : [];
   if (normalized.length === 0) {
-    return { changedIds: [], stateChangedIds: [], evidenceChangedIds: [], blockedBuildPromotion: false, conflicts: [] };
+    return { changedIds: [], stateChangedIds: [], discussionChangedIds: [], blockedBuildPromotion: false, conflicts: [] };
   }
 
   const changedIds = new Set<string>();
   const stateChangedIds = new Set<string>();
-  const evidenceChangedIds = new Set<string>();
+  const discussionChangedIds = new Set<string>();
   let blockedBuildPromotion = false;
   const conflicts: any[] = [];
   for (const update of normalized.slice(0, 8)) {
@@ -629,26 +690,24 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
         buildGateMessage = `Build promotion blocked for ${existing.id}: unresolved contradictions remain. Mark the subgoal decisionState=resolved before sending it to building.`;
       }
       if (!canMutateState) {
-        const evidenceEntry = buildSubgoalEvidenceEntry(update, agentId, timestamp);
-        if (!evidenceEntry) {
+        const discussionContent = buildSubgoalDiscussionContent(update);
+        if (!discussionContent) {
           continue;
         }
         session.subgoals[existingIndex] = {
           ...existing,
           updatedAt: timestamp,
           updatedBy: agentId,
-          evidenceRevision: Math.max(0, Number(existing.evidenceRevision || 0)) + 1,
-          pendingEvidence: [...(Array.isArray(existing.pendingEvidence) ? existing.pendingEvidence : []), evidenceEntry],
+          discussionRevision: Math.max(0, Number(existing.discussionRevision || 0)) + 1,
+          discussionMessages: appendSubgoalDiscussion(existing, agentId, timestamp, discussionContent),
           conflictCount: Math.max(0, Number(existing.conflictCount || 0)),
           activeConflict: shouldPreserveActiveConflict(session, agentId, existing),
           lastConflictAt: shouldPreserveActiveConflict(session, agentId, existing) ? existing.lastConflictAt ?? timestamp : existing.lastConflictAt ?? null,
           lastConflictSummary: shouldPreserveActiveConflict(session, agentId, existing) ? existing.lastConflictSummary ?? null : existing.lastConflictSummary ?? null,
           conflictHistory: Array.isArray(existing.conflictHistory) ? existing.conflictHistory : [],
-          lastMergedEvidenceAt: existing.lastMergedEvidenceAt ?? null,
-          lastMergedEvidenceBy: existing.lastMergedEvidenceBy ?? null,
         };
         changedIds.add(existing.id);
-        evidenceChangedIds.add(existing.id);
+        discussionChangedIds.add(existing.id);
         continue;
       }
       if (!redirectedFromMerged && shouldIgnoreStaleSubgoalUpdate(session, existing, update) && wantsStateMutation) {
@@ -751,7 +810,6 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
               : existing.lastReopenReason)
             || null);
       const preserveActiveConflict = shouldPreserveActiveConflict(session, agentId, existing);
-      const mergedPendingEvidence = Array.isArray(existing.pendingEvidence) ? existing.pendingEvidence.length > 0 : false;
       const inferredFact = !canMutateState && update.summary ? [update.summary] : [];
       session.subgoals[existingIndex] = {
         ...existing,
@@ -774,8 +832,8 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
         updatedAt: timestamp,
         updatedBy: agentId,
         revision: session.subgoalRevision,
-        evidenceRevision: Math.max(0, Number(existing.evidenceRevision || 0)),
-        pendingEvidence: canMutateState ? [] : (Array.isArray(existing.pendingEvidence) ? existing.pendingEvidence : []),
+        discussionRevision: Math.max(0, Number(existing.discussionRevision || 0)),
+        discussionMessages: Array.isArray(existing.discussionMessages) ? existing.discussionMessages : [],
         conflictCount: Math.max(0, Number(existing.conflictCount || 0)),
         activeConflict: preserveActiveConflict ? true : Boolean(buildGateMessage),
         lastConflictAt: preserveActiveConflict
@@ -789,8 +847,6 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
             ? buildGateMessage
             : (decisionState === "resolved" ? null : existing.lastConflictSummary ?? null),
         conflictHistory: Array.isArray(existing.conflictHistory) ? existing.conflictHistory : [],
-        lastMergedEvidenceAt: canMutateState && mergedPendingEvidence ? timestamp : (existing.lastMergedEvidenceAt ?? null),
-        lastMergedEvidenceBy: canMutateState && mergedPendingEvidence ? agentId : (existing.lastMergedEvidenceBy ?? null),
       };
       changedIds.add(existing.id);
       stateChangedIds.add(existing.id);
@@ -798,6 +854,10 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
     }
 
     if (!canCreateSubgoal(session, agentId)) {
+      continue;
+    }
+
+    if (!hasCreateContent(update)) {
       continue;
     }
 
@@ -851,15 +911,13 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
       updatedAt: timestamp,
       updatedBy: agentId,
       revision: session.subgoalRevision,
-      evidenceRevision: 0,
-      pendingEvidence: [],
+      discussionRevision: 0,
+      discussionMessages: [],
       conflictCount: 0,
       activeConflict: Boolean(buildGateMessage),
       lastConflictAt: null,
       lastConflictSummary: buildGateMessage,
       conflictHistory: [],
-      lastMergedEvidenceAt: null,
-      lastMergedEvidenceBy: null,
     });
     changedIds.add(id);
     stateChangedIds.add(id);
@@ -877,7 +935,7 @@ export function applySubgoalUpdates(session: any, agentId: string, updates: any[
   return {
     changedIds: [...changedIds],
     stateChangedIds: [...stateChangedIds],
-    evidenceChangedIds: [...evidenceChangedIds],
+    discussionChangedIds: [...discussionChangedIds],
     blockedBuildPromotion,
     conflicts,
   };

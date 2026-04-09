@@ -31,10 +31,8 @@ function pushSubgoal(session, overrides = {}) {
     lastConflictAt: null,
     lastConflictSummary: null,
     conflictHistory: [],
-    evidenceRevision: 0,
-    pendingEvidence: [],
-    lastMergedEvidenceAt: null,
-    lastMergedEvidenceBy: null,
+    discussionRevision: 0,
+    discussionMessages: [],
     ...overrides,
   });
 }

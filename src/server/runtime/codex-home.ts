@@ -5,6 +5,9 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { AppConfig, CodexAuthStatus } from "../../shared/types";
 import { ensureDir, timestampSlug } from "../lib/utils";
+import { INTERNAL_SESSION_MCP_SERVER_NAME } from "./session-mcp";
+
+export { INTERNAL_SESSION_MCP_SERVER_NAME } from "./session-mcp";
 
 const AUTH_ARTIFACTS = [
   "auth.json",
@@ -126,6 +129,10 @@ function quoteTomlString(value: string): string {
   return `"${String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+function renderTomlArray(values: string[]): string {
+  return `[ ${values.map((value) => quoteTomlString(value)).join(", ")} ]`;
+}
+
 function renderTopLevelConfig(config: AppConfig): string[] {
   const lines: string[] = [];
   const model = String(config.defaults.model ?? "").trim();
@@ -147,6 +154,18 @@ function renderFeatureSection(hasMcpServers: boolean): string[] {
   return [
     "[features]",
     "rmcp_client = true",
+  ];
+}
+
+function renderInternalSessionMcpSection(): string[] {
+  const cliPath = resolve(process.cwd(), "dist", "cli.js");
+  return [
+    `[mcp_servers.${INTERNAL_SESSION_MCP_SERVER_NAME}]`,
+    `command = ${quoteTomlString(process.execPath)}`,
+    `args = ${renderTomlArray([cliPath, "mcp-session"])}`,
+    "startup_timeout_sec = 30",
+    "tool_timeout_sec = 60",
+    "enabled = true",
   ];
 }
 
@@ -423,10 +442,12 @@ export function syncProjectCodexHome(config: AppConfig, options?: { preserveProj
     renderedBlocks.push(topLevel.join("\n"));
   }
 
-  const featureSection = renderFeatureSection(selectedServers.some((server) => mcpSections.has(server)));
+  const featureSection = renderFeatureSection(true);
   if (featureSection.length > 0) {
     renderedBlocks.push(featureSection.join("\n"));
   }
+
+  renderedBlocks.push(renderInternalSessionMcpSection().join("\n"));
 
   for (const server of selectedServers) {
     const blocks = mcpSections.get(server) ?? [];

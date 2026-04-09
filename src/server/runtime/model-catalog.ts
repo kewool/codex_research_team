@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { INTERNAL_SESSION_MCP_SERVER_NAME } from "./session-mcp";
 
 function globalCodexHome(): string {
   return join(homedir(), ".codex");
@@ -102,7 +103,7 @@ export function loadCodexMcpCatalog(preferredHome?: string | null): { servers: s
   const home = codexHome(preferredHome);
   const localServers = readMcpServers(home);
   const globalServers = home === globalCodexHome() ? [] : readMcpServers(globalCodexHome());
-  const servers = [...new Set([...localServers, ...globalServers])];
+  const servers = [...new Set([...localServers, ...globalServers])].filter((server) => server !== INTERNAL_SESSION_MCP_SERVER_NAME);
   const source = localServers.length > 0
     ? preferredHome
       ? `config:${home}`

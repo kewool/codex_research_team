@@ -113,7 +113,7 @@ export function transcriptEventLimit(session: any, agent: any): number {
   const ownedStages = Array.isArray(agent.preset.policy?.ownedStages) ? agent.preset.policy.ownedStages : [];
   const ownsRoutingStages = ownedStages.includes("ready_for_build") || ownedStages.includes("blocked");
   const ownsImplementationStages = ownedStages.includes("building") || ownedStages.includes("ready_for_review");
-  return Math.min(configured, ownsRoutingStages ? 6 : ownsImplementationStages ? 3 : 4);
+  return Math.min(configured, ownsRoutingStages ? 4 : ownsImplementationStages ? 2 : 2);
 }
 
 export function transcriptCharLimit(session: any, agent: any): number {
@@ -128,7 +128,6 @@ export function transcriptChannels(session: any, agent: any): Set<string> {
 
 export function buildTranscript(session: any, agent: any, digest: any): string {
   const goalSequence = latestGoalSequence(session);
-  const allowedChannels = transcriptChannels(session, agent);
   const skipSequences = digestSequences(digest);
   const events = session.recentEvents
     .filter((event: any) => {
@@ -140,10 +139,15 @@ export function buildTranscript(session: any, agent: any, digest: any): string {
       if (event.channel === "status" || event.channel === "system") {
         return false;
       }
-      if (!isTargetedTeamMessage && !allowedChannels.has(event.channel)) {
-        return false;
-      }
-      if (session.isOperatorEvent(event) && targetIds.length > 0 && !targetIds.includes(agent.preset.id)) {
+      if (session.isOperatorEvent(event)) {
+        if (targetIds.length > 0 && !targetIds.includes(agent.preset.id)) {
+          return false;
+        }
+      } else if (isTargetedTeamMessage) {
+        if (!targetIds.includes(agent.preset.id)) {
+          return false;
+        }
+      } else {
         return false;
       }
       if (goalSequence > 0 && event.sequence < goalSequence) {

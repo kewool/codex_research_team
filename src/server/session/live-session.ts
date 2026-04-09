@@ -97,6 +97,7 @@ import {
 import {
   agentOwnsStage,
   applySubgoalUpdates,
+  appendSubgoalDiscussionMessage,
   archivedSubgoals,
   buildObsoleteTurnConflicts,
   buildStaleSubgoalConflict,
@@ -177,7 +178,7 @@ interface RuntimeAgent {
 interface SubgoalUpdateResult {
   changedIds: string[];
   stateChangedIds: string[];
-  evidenceChangedIds: string[];
+  discussionChangedIds: string[];
   blockedBuildPromotion: boolean;
   conflicts: StaleSubgoalConflict[];
 }
@@ -296,28 +297,37 @@ export class LiveSession {
                     currentAssigneeAgentId: String(entry?.currentAssigneeAgentId ?? "").trim() || null,
                   }))
               : [],
-            evidenceRevision: Math.max(0, Number(subgoal?.evidenceRevision || 0)),
-            pendingEvidence: Array.isArray(subgoal?.pendingEvidence)
-              ? subgoal.pendingEvidence
+            discussionRevision: Math.max(0, Number(subgoal?.discussionRevision || subgoal?.evidenceRevision || 0)),
+            discussionMessages: Array.isArray(subgoal?.discussionMessages)
+              ? subgoal.discussionMessages
                   .filter((entry: any) => entry && typeof entry === "object")
                   .map((entry: any) => ({
-                    id: String(entry?.id ?? "").trim() || `evidence-${Math.random().toString(36).slice(2, 8)}`,
+                    id: String(entry?.id ?? "").trim() || `discussion-${Math.random().toString(36).slice(2, 8)}`,
                     timestamp: String(entry?.timestamp ?? nowIso()),
                     agentId: String(entry?.agentId ?? "").trim() || "unknown",
-                    summary: entry?.summary ? String(entry.summary).trim() : null,
-                    facts: normalizeMemoryList(entry?.facts, SUBGOAL_FACT_LIMIT),
-                    openQuestions: normalizeMemoryList(entry?.openQuestions, SUBGOAL_QUESTION_LIMIT),
-                    resolvedDecisions: normalizeMemoryList(entry?.resolvedDecisions, SUBGOAL_DECISION_LIMIT),
-                    acceptanceCriteria: normalizeMemoryList(entry?.acceptanceCriteria, SUBGOAL_ACCEPTANCE_LIMIT),
-                    relevantFiles: normalizeMemoryList(entry?.relevantFiles, SUBGOAL_FILE_LIMIT, 120),
-                    nextAction: normalizeNextAction(entry?.nextAction),
-                    proposedStage: entry?.proposedStage ? normalizeSubgoalStage(entry.proposedStage, "researching") : null,
-                    proposedDecisionState: entry?.proposedDecisionState ? normalizeDecisionState(entry.proposedDecisionState, "open") : null,
-                    reopenReason: entry?.reopenReason ? String(entry.reopenReason).trim() : null,
+                    content: String(entry?.content ?? "").trim(),
                   }))
-              : [],
-            lastMergedEvidenceAt: subgoal?.lastMergedEvidenceAt ? String(subgoal.lastMergedEvidenceAt) : null,
-            lastMergedEvidenceBy: subgoal?.lastMergedEvidenceBy ? String(subgoal.lastMergedEvidenceBy) : null,
+                  .filter((entry: any) => entry.content)
+              : Array.isArray(subgoal?.pendingEvidence)
+                ? subgoal.pendingEvidence
+                    .filter((entry: any) => entry && typeof entry === "object")
+                    .map((entry: any) => ({
+                      id: String(entry?.id ?? "").trim() || `discussion-${Math.random().toString(36).slice(2, 8)}`,
+                      timestamp: String(entry?.timestamp ?? nowIso()),
+                      agentId: String(entry?.agentId ?? "").trim() || "unknown",
+                      content: compactWhitespace([
+                        entry?.summary ? String(entry.summary).trim() : "",
+                        Array.isArray(entry?.facts) && entry.facts.length > 0 ? `facts: ${normalizeMemoryList(entry.facts, SUBGOAL_FACT_LIMIT).join(" | ")}` : "",
+                        Array.isArray(entry?.openQuestions) && entry.openQuestions.length > 0 ? `open: ${normalizeMemoryList(entry.openQuestions, SUBGOAL_QUESTION_LIMIT).join(" | ")}` : "",
+                        Array.isArray(entry?.resolvedDecisions) && entry.resolvedDecisions.length > 0 ? `resolved: ${normalizeMemoryList(entry.resolvedDecisions, SUBGOAL_DECISION_LIMIT).join(" | ")}` : "",
+                        Array.isArray(entry?.acceptanceCriteria) && entry.acceptanceCriteria.length > 0 ? `acceptance: ${normalizeMemoryList(entry.acceptanceCriteria, SUBGOAL_ACCEPTANCE_LIMIT).join(" | ")}` : "",
+                        Array.isArray(entry?.relevantFiles) && entry.relevantFiles.length > 0 ? `files: ${normalizeMemoryList(entry.relevantFiles, SUBGOAL_FILE_LIMIT, 120).join(" | ")}` : "",
+                        entry?.nextAction ? `next: ${normalizeNextAction(entry.nextAction)}` : "",
+                        entry?.reopenReason ? `reopen: ${String(entry.reopenReason).trim()}` : "",
+                      ].filter(Boolean).join(" || ")),
+                    }))
+                    .filter((entry: any) => entry.content)
+                : [],
           }))
         : [];
       this.updatedAt = String(options.snapshot.updatedAt || this.updatedAt);
@@ -423,6 +433,18 @@ export class LiveSession {
     }
     this.updateAgentSnapshot(agentId, { lastInput: trimmed, waitingForInput: false });
     this.publish("operator", this.operatorChannel(), trimmed, { targetAgentId: agentId, directInput: true, operatorEvent: true });
+  }
+
+  async appendSubgoalDiscussion(agentId: string, subgoalId: string, content: string): Promise<void> {
+    const normalizedAgentId = String(agentId ?? "").trim();
+    if (!normalizedAgentId || !this.agents.has(normalizedAgentId)) {
+      throw new Error(`Unknown agent: ${agentId}`);
+    }
+    const result = appendSubgoalDiscussionMessage(this, subgoalId, normalizedAgentId, content);
+    if (!result.changed) {
+      throw new Error(`Unknown or archived subgoal: ${subgoalId}`);
+    }
+    this.emit({ type: "session", sessionId: this.id, snapshot: this.snapshot() });
   }
 
   async stop(): Promise<void> {

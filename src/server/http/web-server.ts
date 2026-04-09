@@ -192,6 +192,23 @@ export async function startWebServer(options?: { configPath?: string; host?: str
         return;
       }
 
+      const discussionMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/subgoals\/([^/]+)\/discussion$/);
+      if (request.method === "POST" && discussionMatch) {
+        const session = await getInteractiveSession(decodeURIComponent(discussionMatch[1]), { autoResumeIdle: false });
+        if (!session) {
+          sendJson(response, 404, { error: "Session not active." });
+          return;
+        }
+        const body = await readBody(request);
+        await session.appendSubgoalDiscussion(
+          String(body.agentId ?? "").trim(),
+          decodeURIComponent(discussionMatch[2]),
+          String(body.content ?? ""),
+        );
+        sendJson(response, 200, { session: session.snapshot() });
+        return;
+      }
+
       const sessionMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
       if (request.method === "GET" && sessionMatch) {
         const sessionId = decodeURIComponent(sessionMatch[1]);

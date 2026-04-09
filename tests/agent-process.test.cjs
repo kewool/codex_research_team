@@ -62,7 +62,7 @@ function createAgent(rootDir) {
 function createProcessHarness(t) {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-research-team-"));
   t.after(async () => {
-    await fsp.rm(rootDir, { recursive: true, force: true });
+    await fsp.rm(rootDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   });
   const config = createConfig(rootDir);
   const workspacePath = path.join(rootDir, "workspace");
@@ -89,6 +89,7 @@ function createProcessHarness(t) {
     process: new CodexAgentProcess({
       config,
       agent,
+      sessionId: "session-1",
       workspacePath,
       language: "en",
       files,

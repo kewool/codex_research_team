@@ -31,10 +31,8 @@ function addBaseSubgoal(session, overrides = {}) {
     lastConflictAt: null,
     lastConflictSummary: null,
     conflictHistory: [],
-    evidenceRevision: 0,
-    pendingEvidence: [],
-    lastMergedEvidenceAt: null,
-    lastMergedEvidenceBy: null,
+    discussionRevision: 0,
+    discussionMessages: [],
     ...overrides,
   });
 }
@@ -73,12 +71,12 @@ test("applySubgoalUpdates creates subgoals, reuses exact topic keys, and archive
   }]);
   assert.deepEqual(result.changedIds, ["sg-1"]);
   assert.deepEqual(result.stateChangedIds, []);
-  assert.deepEqual(result.evidenceChangedIds, ["sg-1"]);
+  assert.deepEqual(result.discussionChangedIds, ["sg-1"]);
   assert.equal(session.subgoals.length, 1);
   assert.deepEqual(session.subgoals[0].facts, ["timing drifts"]);
-  assert.equal(session.subgoals[0].evidenceRevision, 1);
-  assert.equal(session.subgoals[0].pendingEvidence.length, 1);
-  assert.deepEqual(session.subgoals[0].pendingEvidence[0].facts, ["second finding"]);
+  assert.equal(session.subgoals[0].discussionRevision, 1);
+  assert.equal(session.subgoals[0].discussionMessages.length, 1);
+  assert.match(session.subgoals[0].discussionMessages[0].content, /second finding/);
 
   result = subgoals.applySubgoalUpdates(session, "researcher_1", [{
     title: "Chat ranking",
@@ -114,7 +112,7 @@ test("research card creator becomes the canonical owner and only that owner sees
   assert.equal(session.subgoals[0].assigneeAgentId, "researcher_1");
 });
 
-test("canonical owner can merge pending evidence into the research card", () => {
+test("canonical owner updates the research card without clearing discussion", () => {
   const session = createSessionFixture();
   addBaseSubgoal(session, {
     assigneeAgentId: "researcher_1",
@@ -130,7 +128,7 @@ test("canonical owner can merge pending evidence into the research card", () => 
     addOpenQuestions: ["does the shard match?"],
   }]);
 
-  assert.equal(session.subgoals[0].pendingEvidence.length, 1);
+  assert.equal(session.subgoals[0].discussionMessages.length, 1);
   assert.equal(session.subgoals[0].revision, 1);
 
   const merged = subgoals.applySubgoalUpdates(session, "researcher_1", [{
@@ -143,7 +141,7 @@ test("canonical owner can merge pending evidence into the research card", () => 
   }]);
 
   assert.deepEqual(merged.stateChangedIds, ["sg-1"]);
-  assert.equal(session.subgoals[0].pendingEvidence.length, 0);
+  assert.equal(session.subgoals[0].discussionMessages.length, 1);
   assert.equal(session.subgoals[0].summary, "merged canonical summary");
   assert.deepEqual(session.subgoals[0].facts, ["initial fact", "merged fact"]);
   assert.equal(session.subgoals[0].stage, "ready_for_build");
@@ -207,9 +205,9 @@ test("researchers cannot clear an active conflict on a shared research card", ()
   assert.equal(session.subgoals[0].lastConflictSummary, "Conflict on sg-1: stale research update");
   assert.equal(session.subgoals[0].conflictCount, 3);
   assert.deepEqual(session.subgoals[0].facts, []);
-  assert.equal(session.subgoals[0].pendingEvidence.length, 1);
-  assert.equal(session.subgoals[0].pendingEvidence[0].summary, "updated summary from researcher");
-  assert.deepEqual(session.subgoals[0].pendingEvidence[0].facts, ["new supporting evidence"]);
+  assert.equal(session.subgoals[0].discussionMessages.length, 1);
+  assert.match(session.subgoals[0].discussionMessages[0].content, /updated summary from researcher/);
+  assert.match(session.subgoals[0].discussionMessages[0].content, /new supporting evidence/);
 });
 
 test("coordinators can clear an active conflict while updating the card", () => {
@@ -258,7 +256,20 @@ test("coordinator can create a resolved build slice directly in building for the
   assert.equal(result.blockedBuildPromotion, false);
 });
 
-test("non-owner stale research updates become pending evidence instead of stale conflicts", () => {
+test("state-only unknown subgoal updates do not create untitled placeholder cards", () => {
+  const session = createSessionFixture();
+
+  const result = subgoals.applySubgoalUpdates(session, "researcher_3", [{
+    id: "sg-local-audio-runtime",
+    assigneeAgentId: "researcher_3",
+    stage: "researching",
+  }]);
+
+  assert.deepEqual(result.changedIds, []);
+  assert.equal(session.subgoals.length, 0);
+});
+
+test("non-owner stale research updates become discussion instead of stale conflicts", () => {
   const session = createSessionFixture();
   addBaseSubgoal(session, {
     revision: 6,
@@ -278,38 +289,29 @@ test("non-owner stale research updates become pending evidence instead of stale 
 
   assert.deepEqual(result.conflicts, []);
   assert.deepEqual(result.stateChangedIds, []);
-  assert.deepEqual(result.evidenceChangedIds, ["sg-1"]);
-  assert.equal(session.subgoals[0].pendingEvidence.length, 1);
-  assert.equal(session.subgoals[0].pendingEvidence[0].reopenReason, "new evidence suggests the contract is still wrong");
-  assert.equal(session.subgoals[0].pendingEvidence[0].proposedStage, "researching");
+  assert.deepEqual(result.discussionChangedIds, ["sg-1"]);
+  assert.equal(session.subgoals[0].discussionMessages.length, 1);
+  assert.match(session.subgoals[0].discussionMessages[0].content, /new evidence suggests the contract is still wrong/);
+  assert.match(session.subgoals[0].discussionMessages[0].content, /suggested stage: researching/);
   assert.equal(session.subgoals[0].conflictCount, 0);
 });
 
-test("owner merge records when pending evidence was last folded into canonical state", () => {
+test("appendSubgoalDiscussionMessage appends a chat-style discussion entry without changing canonical revision", () => {
   const session = createSessionFixture();
   addBaseSubgoal(session, {
+    revision: 6,
     assigneeAgentId: "researcher_1",
     updatedBy: "researcher_1",
   });
 
-  subgoals.applySubgoalUpdates(session, "researcher_2", [{
-    id: "sg-1",
-    expectedRevision: 1,
-    summary: "needs a canonical merge",
-    addFacts: ["evidence to merge"],
-  }]);
+  const result = subgoals.appendSubgoalDiscussionMessage(session, "sg-1", "researcher_2", "please double-check the archive provenance");
 
-  const result = subgoals.applySubgoalUpdates(session, "researcher_1", [{
-    id: "sg-1",
-    expectedRevision: 1,
-    summary: "owner merged evidence into canonical summary",
-    addFacts: ["canonical fact"],
-  }]);
-
-  assert.deepEqual(result.stateChangedIds, ["sg-1"]);
-  assert.equal(session.subgoals[0].pendingEvidence.length, 0);
-  assert.equal(Boolean(session.subgoals[0].lastMergedEvidenceAt), true);
-  assert.equal(session.subgoals[0].lastMergedEvidenceBy, "researcher_1");
+  assert.equal(result.changed, true);
+  assert.equal(result.subgoalId, "sg-1");
+  assert.equal(session.subgoals[0].revision, 6);
+  assert.equal(session.subgoals[0].discussionRevision, 1);
+  assert.equal(session.subgoals[0].discussionMessages.length, 1);
+  assert.equal(session.subgoals[0].discussionMessages[0].content, "please double-check the archive provenance");
 });
 
 test("recordSubgoalConflicts appends conflict history entries", () => {

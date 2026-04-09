@@ -137,6 +137,7 @@ export function initializeAgents(session: any): void {
     const runtime = new CodexAgentProcess({
       config: session.config,
       agent: preset,
+      sessionId: session.id,
       workspacePath: session.workspacePath,
       language: session.config.defaults.language,
       files,

@@ -33,7 +33,6 @@ export function actionableSubgoalSignature(session: any, agent: any): string | n
       String(subgoal.decisionState ?? "").trim(),
       String(subgoal.assigneeAgentId ?? "-").trim() || "-",
       String(Number(subgoal.revision || 0)),
-      String(Number(subgoal.evidenceRevision || 0)),
     ].join(":"))
     .sort()
     .join("|");
@@ -56,7 +55,6 @@ export function routingAttentionSignature(session: any, agent: any): string | nu
       String(subgoal.decisionState ?? "").trim(),
       String(subgoal.assigneeAgentId ?? "-").trim() || "-",
       String(Number(subgoal.revision || 0)),
-      String(Number(subgoal.evidenceRevision || 0)),
     ].join(":"))
     .sort()
     .join("|");
@@ -171,13 +169,12 @@ export function buildGoalBoardSummary(session: any, agent: any): string {
       const ownerId = subgoal.assigneeAgentId || "-";
       const owner = ` owner=${ownerId}`;
       const revision = ` rev=${subgoal.revision}`;
-      const evidence = subgoal.pendingEvidence?.length ? ` evidence=${subgoal.pendingEvidence.length}` : "";
+      const discussion = subgoal.discussionMessages?.length ? ` discussion=${subgoal.discussionMessages.length}` : "";
       const decision = ` decision=${subgoal.decisionState}`;
       const focus = actionableIds.has(subgoal.id) ? " focus=true" : "";
       const conflict = subgoal.activeConflict ? ` conflicts=${Math.max(1, Number(subgoal.conflictCount || 0))}` : "";
       const reopen = subgoal.lastReopenReason ? " reopen=true" : "";
-      const merged = subgoal.lastMergedEvidenceAt ? ` merged=${subgoal.lastMergedEvidenceAt}` : "";
-      return `- ${shortenText(subgoal.title, 90)} (${subgoal.id})${revision} [${subgoal.stage}]${decision}${owner}${focus}${conflict}${reopen}${evidence}${merged}`;
+      return `- ${shortenText(subgoal.title, 90)} (${subgoal.id})${revision} [${subgoal.stage}]${decision}${owner}${focus}${conflict}${reopen}${discussion}`;
     })
     .join("\n");
 }
@@ -192,13 +189,12 @@ export function buildActionableSubgoalSummary(session: any, agent: any): string 
       const conflict = subgoal.activeConflict && subgoal.lastConflictSummary
         ? ` !! conflict: ${shortenText(subgoal.lastConflictSummary, 120)}`
         : "";
-      const evidence = Array.isArray(subgoal.pendingEvidence) && subgoal.pendingEvidence.length > 0
-        ? ` !! pending_evidence=${subgoal.pendingEvidence.length}`
+      const discussion = Array.isArray(subgoal.discussionMessages) && subgoal.discussionMessages.length > 0
+        ? ` !! discussion=${subgoal.discussionMessages.length}`
         : "";
       const reopen = subgoal.lastReopenReason ? ` reopen=${shortenText(subgoal.lastReopenReason, 100)}` : "";
       const owner = ` owner=${subgoal.assigneeAgentId || "-"}`;
-      const merged = subgoal.lastMergedEvidenceAt ? ` merged=${shortenText(`${subgoal.lastMergedEvidenceAt} by ${subgoal.lastMergedEvidenceBy || "unknown"}`, 80)}` : "";
-      return `- ${shortenText(subgoal.title, 100)} (${subgoal.id}) rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState}${owner} :: ${shortenText(subgoal.summary, 140)}${conflict}${evidence}${reopen}${merged}`;
+      return `- ${shortenText(subgoal.title, 100)} (${subgoal.id}) rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState}${owner} :: ${shortenText(subgoal.summary, 140)}${conflict}${discussion}${reopen}`;
     })
     .join("\n");
 }
@@ -210,56 +206,27 @@ export function buildRelevantSubgoalSummary(session: any, agent: any, digest: an
   }
   return relevant
     .map((subgoal: any) => {
-      const routingOwner = isRoutingOwner(agent);
-      const buildOwner = ownsAnyStage(agent, ["building", "ready_for_review"]);
-      const lines = [
-        `- ${shortenText(subgoal.title, 100)} (${subgoal.id}) rev=${subgoal.revision} [${subgoal.stage}] decision=${subgoal.decisionState}${subgoal.assigneeAgentId ? ` assignee=${subgoal.assigneeAgentId}` : ""}`,
-        `  summary: ${shortenText(subgoal.summary, 180)}`,
+      const discussionCount = Array.isArray(subgoal.discussionMessages) ? subgoal.discussionMessages.length : 0;
+      const conflictCount = Number(subgoal.conflictCount || 0);
+      const parts = [
+        `- ${shortenText(subgoal.title, 90)} (${subgoal.id})`,
+        `[${subgoal.stage}]`,
+        `decision=${subgoal.decisionState}`,
+        `owner=${subgoal.assigneeAgentId || "-"}`,
+        `rev=${subgoal.revision}`,
       ];
-      if (subgoal.facts.length > 0 && !buildOwner) {
-        lines.push(`  facts: ${subgoal.facts.slice(0, routingOwner ? 3 : 2).map((item: string) => shortenText(item, 120)).join(" | ")}`);
+      if (discussionCount > 0) {
+        parts.push(`discussion=${discussionCount}`);
       }
-      if (subgoal.openQuestions.length > 0) {
-        lines.push(`  open_questions: ${subgoal.openQuestions.slice(0, 2).map((item: string) => shortenText(item, 120)).join(" | ")}`);
-      }
-      if (subgoal.resolvedDecisions.length > 0) {
-        lines.push(`  resolved: ${subgoal.resolvedDecisions.slice(0, buildOwner ? 2 : 3).map((item: string) => shortenText(item, 120)).join(" | ")}`);
-      }
-      if (subgoal.acceptanceCriteria.length > 0) {
-        lines.push(`  acceptance: ${subgoal.acceptanceCriteria.slice(0, 2).map((item: string) => shortenText(item, 120)).join(" | ")}`);
-      }
-      if (subgoal.relevantFiles.length > 0) {
-        lines.push(`  files: ${subgoal.relevantFiles.slice(0, buildOwner ? 6 : 4).join(", ")}`);
-      }
-      if (Array.isArray(subgoal.pendingEvidence) && subgoal.pendingEvidence.length > 0) {
-        const recentEvidence = subgoal.pendingEvidence.slice(-2).map((entry: any) => {
-          const parts = [
-            entry.summary ? shortenText(entry.summary, 100) : "",
-            Array.isArray(entry.facts) && entry.facts.length > 0 ? shortenText(entry.facts.join(" | "), 100) : "",
-            entry.reopenReason ? `reopen=${shortenText(entry.reopenReason, 80)}` : "",
-          ].filter(Boolean);
-          return `${entry.agentId}: ${parts.join(" | ")}`;
-        });
-        lines.push(`  pending_evidence(${subgoal.pendingEvidence.length}): ${recentEvidence.join(" || ")}`);
+      if (conflictCount > 0 || subgoal.activeConflict) {
+        parts.push(`conflicts=${Math.max(conflictCount, subgoal.activeConflict ? 1 : 0)}`);
       }
       if (subgoal.nextAction) {
-        lines.push(`  next_action: ${shortenText(subgoal.nextAction, 140)}`);
+        parts.push(`next=${shortenText(subgoal.nextAction, 80)}`);
       }
-      if (subgoal.lastMergedEvidenceAt) {
-        lines.push(`  last_merge: ${shortenText(`${subgoal.lastMergedEvidenceAt} by ${subgoal.lastMergedEvidenceBy || "unknown"}`, 140)}`);
-      }
-      if (subgoal.lastReopenReason) {
-        lines.push(`  reopen_reason: ${shortenText(subgoal.lastReopenReason, 140)}`);
-      }
-      if (subgoal.activeConflict && subgoal.lastConflictSummary) {
-        lines.push(`  conflict: ${shortenText(subgoal.lastConflictSummary, 140)}`);
-      } else if (Array.isArray(subgoal.conflictHistory) && subgoal.conflictHistory.length > 0) {
-        const latestConflict = subgoal.conflictHistory[subgoal.conflictHistory.length - 1];
-        lines.push(`  recent_conflict: ${shortenText(String(latestConflict.summary || ""), 140)}`);
-      }
-      return lines.join("\n");
+      return parts.join(" ");
     })
-    .join("\n\n");
+    .join("\n");
 }
 
 export function pingGoalBoardOwners(session: any): void {

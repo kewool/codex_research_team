@@ -178,6 +178,63 @@ test("message-only research note to coordinator is still published when board st
   assert.deepEqual(researchEvent.metadata?.targetAgentIds, ["coordinator_1"]);
 });
 
+test("targeted coordinator message-only discovery turns are not suppressed without subgoal updates", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-targeted-discovery-note-"));
+  const previousCwd = process.cwd();
+  process.chdir(rootDir);
+  t.after(async () => {
+    process.chdir(previousCwd);
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  const session = new LiveSession({
+    config,
+    goal: "targeted discovery note regression",
+    title: "targeted discovery note regression",
+    workspaceName: config.workspaces[0].name,
+    workspacePath: config.workspaces[0].path,
+  });
+
+  session.initializeAgents();
+  const researcher = session.agents.get("researcher_1");
+  assert.ok(researcher);
+
+  applyTurnResult(session, "researcher_1", {
+    shouldReply: true,
+    workingNotes: ["Initial architecture findings are ready for coordination."],
+    teamMessages: [{
+      content: "Initial architecture handoff for the MR generator.",
+      targetAgentId: "coordinator_1",
+      targetAgentIds: ["coordinator_1"],
+      subgoalIds: [],
+    }],
+    subgoalUpdates: [],
+    completion: "continue",
+    rawText: "",
+    runtimeDiagnostics: {
+      sawFileChange: false,
+      sawPolicyWriteBlock: false,
+      sawBroadDataLoad: false,
+      sawBroadOutputDump: false,
+    },
+  }, 2, null);
+
+  const researchEvent = session.recentEvents.find((event) =>
+      event.channel === "research" &&
+      event.sender === "researcher_1" &&
+      /Initial architecture handoff/i.test(event.content),
+  );
+  assert.ok(researchEvent, "targeted coordinator handoff should be published");
+
+  const notesPath = path.join(session.files.agentsDir, "researcher_1", "notes.jsonl");
+  const messagesPath = path.join(session.files.agentsDir, "researcher_1", "messages.jsonl");
+  assert.equal(fs.existsSync(notesPath), true);
+  assert.equal(fs.existsSync(messagesPath), true);
+  assert.match(fs.readFileSync(notesPath, "utf8"), /Initial architecture findings/i);
+  assert.match(fs.readFileSync(messagesPath, "utf8"), /Initial architecture handoff/i);
+});
+
 test("notes-only reply to a targeted operator question is still published to the feed", async (t) => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-operator-reply-"));
   const previousCwd = process.cwd();

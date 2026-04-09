@@ -8,6 +8,7 @@ const path = require("node:path");
 const {
   backupProjectAuthArtifacts,
   clearProjectAuthArtifacts,
+  INTERNAL_SESSION_MCP_SERVER_NAME,
   loadCodexAuthStatus,
   restoreProjectAuthArtifacts,
   syncProjectCodexHome,
@@ -105,4 +106,28 @@ test("loadCodexAuthStatus exposes the full email from auth.json when logged in",
   const status = loadCodexAuthStatus(config);
   assert.equal(status.loggedIn, true);
   assert.equal(status.email, "full.email@example.com");
+});
+
+test("syncProjectCodexHome always injects the internal session-state MCP server into the project config", async (t) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-codex-home-mcp-"));
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  process.env.HOME = rootDir;
+  process.env.USERPROFILE = rootDir;
+  t.after(async () => {
+    process.env.HOME = previousHome;
+    process.env.USERPROFILE = previousUserProfile;
+    await fsp.rm(rootDir, { recursive: true, force: true });
+  });
+
+  const config = createDefaultConfig(rootDir);
+  config.defaults.codexHomeMode = "project";
+  config.defaults.codexHomeDir = path.join(rootDir, ".codex_research_team", "home");
+
+  const homeDir = syncProjectCodexHome(config);
+  const rendered = fs.readFileSync(path.join(homeDir, "config.toml"), "utf8");
+
+  assert.match(rendered, new RegExp(`\\[mcp_servers\\.${INTERNAL_SESSION_MCP_SERVER_NAME}\\]`));
+  assert.match(rendered, /mcp-session/);
+  assert.match(rendered, /\[features\][\s\S]*rmcp_client = true/);
 });

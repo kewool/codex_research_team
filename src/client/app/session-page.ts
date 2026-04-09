@@ -182,66 +182,46 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
         </div>
       `;
     };
-    const renderEvidenceEntries = (entries: unknown[] | null | undefined): string => {
-      const evidence = Array.isArray(entries)
+    const renderDiscussionEntries = (entries: unknown[] | null | undefined): string => {
+      const discussion = Array.isArray(entries)
         ? entries
             .filter((entry) => entry && typeof entry === "object")
             .map((entry) => {
               const raw = entry as AnyObject;
               return ({
-              agentId: String(raw.agentId || "").trim() || "unknown",
-              summary: String(raw.summary || "").trim(),
-              facts: Array.isArray(raw.facts) ? raw.facts.map((item) => String(item ?? "").trim()).filter(Boolean) : [],
-              openQuestions: Array.isArray(raw.openQuestions) ? raw.openQuestions.map((item) => String(item ?? "").trim()).filter(Boolean) : [],
-              resolvedDecisions: Array.isArray(raw.resolvedDecisions) ? raw.resolvedDecisions.map((item) => String(item ?? "").trim()).filter(Boolean) : [],
-              acceptanceCriteria: Array.isArray(raw.acceptanceCriteria) ? raw.acceptanceCriteria.map((item) => String(item ?? "").trim()).filter(Boolean) : [],
-              relevantFiles: Array.isArray(raw.relevantFiles) ? raw.relevantFiles.map((item) => String(item ?? "").trim()).filter(Boolean) : [],
-              nextAction: String(raw.nextAction || "").trim(),
-              reopenReason: String(raw.reopenReason || "").trim(),
-              timestamp: String(raw.timestamp || "").trim(),
+                agentId: String(raw.agentId || "").trim() || "unknown",
+                content: String(raw.content || "").trim(),
+                timestamp: String(raw.timestamp || "").trim(),
               });
             })
         : [];
-      if (evidence.length === 0) {
-        return "";
-      }
-      const renderEvidenceField = (label: string, values: string[] | string): string => {
-        const text = Array.isArray(values) ? values.filter(Boolean).join(" | ") : String(values || "").trim();
-        if (!text) {
-          return "";
-        }
-        return `<div class="subgoal-evidence-field"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(text)}</span></div>`;
-      };
       return `
         <div class="subgoal-evidence-block">
           <div class="subgoal-memory-row">
-            <strong>Pending Evidence</strong>
-            <span>${escapeHtml(String(evidence.length))} queued</span>
+            <strong>Discussion</strong>
+            <span>${escapeHtml(String(discussion.length))} messages</span>
           </div>
-          <div class="subgoal-evidence-list">
-            ${evidence.map((entry) => `
-              <article class="subgoal-evidence-entry">
-                <header>
-                  <strong>${escapeHtml(entry.agentId)}</strong>
-                  ${entry.timestamp ? `<small>${escapeHtml(entry.timestamp)}</small>` : ""}
-                </header>
-                ${renderEvidenceField("Summary", entry.summary)}
-                ${renderEvidenceField("Facts", entry.facts)}
-                ${renderEvidenceField("Open", entry.openQuestions)}
-                ${renderEvidenceField("Resolved", entry.resolvedDecisions)}
-                ${renderEvidenceField("Acceptance", entry.acceptanceCriteria)}
-                ${renderEvidenceField("Files", entry.relevantFiles)}
-                ${renderEvidenceField("Next", entry.nextAction)}
-                ${renderEvidenceField("Reopen", entry.reopenReason)}
-              </article>
-            `).join("")}
-          </div>
+          ${discussion.length === 0
+            ? `<div class="history-footer muted">No discussion yet.</div>`
+            : `
+              <div class="subgoal-evidence-list">
+                ${discussion.map((entry) => `
+                  <article class="subgoal-evidence-entry">
+                    <header>
+                      <strong>${escapeHtml(entry.agentId)}</strong>
+                      ${entry.timestamp ? `<small>${escapeHtml(entry.timestamp)}</small>` : ""}
+                    </header>
+                    <div class="subgoal-evidence-field"><strong>Message</strong><span>${escapeHtml(entry.content || "-")}</span></div>
+                  </article>
+                `).join("")}
+              </div>
+            `}
         </div>
       `;
     };
     const renderSubgoalCard = (subgoal: AnyObject, archived = false): string => {
       const mergedTarget = subgoal.mergedIntoSubgoalId ? subgoalById.get(String(subgoal.mergedIntoSubgoalId)) : null;
-      const pendingEvidenceCount = Array.isArray(subgoal.pendingEvidence) ? subgoal.pendingEvidence.length : 0;
+      const discussionCount = Array.isArray(subgoal.discussionMessages) ? subgoal.discussionMessages.length : 0;
       return `
         <article class="subgoal-card ${subgoal.activeConflict ? "conflict" : ""} ${archived ? "archived" : ""}" data-stage="${escapeHtml(String(subgoal.stage || "").toLowerCase())}">
           <header>
@@ -252,7 +232,7 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
             <div class="subgoal-card-badges">
               ${subgoal.activeConflict ? `<span class="feed-badge conflict">conflict</span>` : ""}
               ${archived ? `<span class="feed-badge">merged</span>` : ""}
-              ${pendingEvidenceCount > 0 ? `<span class="feed-badge">evidence ${escapeHtml(String(pendingEvidenceCount))}</span>` : ""}
+              ${discussionCount > 0 ? `<span class="feed-badge">discussion ${escapeHtml(String(discussionCount))}</span>` : ""}
               <span class="status-pill ${escapeHtml(String(subgoal.stage || "open"))}">${escapeHtml(subgoal.stage || "open")}</span>
               <span class="feed-badge">${escapeHtml(String(subgoal.decisionState || "open"))}</span>
             </div>
@@ -265,8 +245,7 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
             ${renderMemoryList("Acceptance", subgoal.acceptanceCriteria)}
             ${renderMemoryList("Files", subgoal.relevantFiles)}
             ${subgoal.nextAction ? `<div class="subgoal-memory-row"><strong>Next</strong><span>${escapeHtml(String(subgoal.nextAction || ""))}</span></div>` : ""}
-            ${subgoal.lastMergedEvidenceAt ? `<div class="subgoal-memory-row"><strong>Last Merge</strong><span>${escapeHtml(`${String(subgoal.lastMergedEvidenceAt)} by ${String(subgoal.lastMergedEvidenceBy || "unknown")}`)}</span></div>` : ""}
-            ${renderEvidenceEntries(subgoal.pendingEvidence)}
+            ${renderDiscussionEntries(subgoal.discussionMessages)}
             ${renderConflictHistory(subgoal.conflictHistory)}
           </div>
           ${subgoal.activeConflict && subgoal.lastConflictSummary ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastConflictSummary)}</small>` : ""}

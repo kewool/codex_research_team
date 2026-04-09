@@ -48,21 +48,13 @@ function createRendererHarness(options = {}) {
         acceptanceCriteria: [],
         relevantFiles: [],
         nextAction: "",
-        lastMergedEvidenceAt: "2026-04-03T00:45:00.000Z",
-        lastMergedEvidenceBy: "researcher_1",
-        pendingEvidence: [
+        discussionRevision: 1,
+        discussionMessages: [
           {
-            id: "ev-1",
+            id: "discussion-1",
             timestamp: "2026-04-03T00:00:00.000Z",
             agentId: "researcher_2",
-            summary: "Need to verify the archive mismatch",
-            facts: ["digest mismatch persists"],
-            openQuestions: ["which manifest is canonical?"],
-            resolvedDecisions: [],
-            acceptanceCriteria: [],
-            relevantFiles: ["archive/replay_manifest.json"],
-            nextAction: "compare manifests",
-            reopenReason: "",
+            content: "Need to verify the archive mismatch and compare archive/replay_manifest.json",
           },
         ],
         mergedIntoSubgoalId: null,
@@ -87,9 +79,8 @@ function createRendererHarness(options = {}) {
         acceptanceCriteria: [],
         relevantFiles: [],
         nextAction: "",
-        pendingEvidence: [],
-        lastMergedEvidenceAt: null,
-        lastMergedEvidenceBy: null,
+        discussionRevision: 0,
+        discussionMessages: [],
         mergedIntoSubgoalId: "sg-1",
         archivedAt: "2026-04-03T00:00:00.000Z",
       },
@@ -133,17 +124,26 @@ test("renderSessionPage preserves merged topics open state across rerenders", ()
   assert.match(html, /<details class="subgoal-archive"[^>]*data-session-id="session-1"[^>]* open>/);
 });
 
-test("renderSessionPage shows pending evidence on subgoal cards", () => {
+test("renderSessionPage shows discussion threads on subgoal cards", () => {
   const renderers = createRendererHarness();
 
   const html = renderers.renderSessionPage();
 
-  assert.match(html, /evidence 1/);
-  assert.match(html, /Pending Evidence/);
+  assert.match(html, /discussion 1/);
+  assert.match(html, /Discussion/);
   assert.match(html, /Conflict History/);
-  assert.match(html, /Last Merge/);
   assert.match(html, /owner unassigned/);
   assert.match(html, /researcher_2/);
-  assert.match(html, /digest mismatch persists/);
+  assert.match(html, /Need to verify the archive mismatch/);
   assert.match(html, /archive\/replay_manifest\.json/);
+});
+
+test("renderSessionPage shows an empty discussion section when a subgoal has no discussion yet", () => {
+  const renderers = createRendererHarness();
+
+  const html = renderers.renderSessionPage();
+
+  assert.match(html, /Discussion/);
+  assert.match(html, /0 messages/);
+  assert.match(html, /No discussion yet\./);
 });

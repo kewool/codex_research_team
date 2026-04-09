@@ -4,6 +4,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { startWebServer } from "./server/http/web-server";
+import { runSessionStateMcpServer } from "./server/runtime/session-mcp";
 import { AppConfig, AgentPreset } from "./shared/types";
 import { DEFAULT_CONFIG_PATH, createDefaultConfig, defaultListenChannels, defaultPublishChannel, emptyAgentPolicy, loadConfig, saveConfig } from "./server/config/app-config";
 import { slugify } from "./server/lib/utils";
@@ -192,8 +193,13 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  if (command === "mcp-session") {
+    await runSessionStateMcpServer();
+    process.exit(0);
+  }
+
   if (command !== "serve") {
-    output.write("Commands: serve, settings, workspace, init\n");
+    output.write("Commands: serve, settings, workspace, init, mcp-session\n");
     process.exit(1);
   }
 

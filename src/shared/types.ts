@@ -124,26 +124,15 @@ export interface SessionSubgoal {
   lastConflictAt: string | null;
   lastConflictSummary: string | null;
   conflictHistory: SubgoalConflictRecord[];
-  evidenceRevision: number;
-  pendingEvidence: SubgoalEvidence[];
-  lastMergedEvidenceAt: string | null;
-  lastMergedEvidenceBy: string | null;
+  discussionRevision: number;
+  discussionMessages: SubgoalDiscussionEntry[];
 }
 
-export interface SubgoalEvidence {
+export interface SubgoalDiscussionEntry {
   id: string;
   timestamp: string;
   agentId: string;
-  summary: string | null;
-  facts: string[];
-  openQuestions: string[];
-  resolvedDecisions: string[];
-  acceptanceCriteria: string[];
-  relevantFiles: string[];
-  nextAction: string | null;
-  proposedStage: SubgoalStage | null;
-  proposedDecisionState: SubgoalDecisionState | null;
-  reopenReason: string | null;
+  content: string;
 }
 
 export interface SubgoalUpdate {

@@ -185,12 +185,13 @@ function applyDefaultTargetPolicies(agents: AgentPreset[]): AgentPreset[] {
 function researchPromptGuidance(focus: string): string[] {
   return [
     focus,
-    "Use the goal board as the source of truth for research cards, unresolved contracts, and downstream handoff readiness.",
-    "For open or researching cards, treat the current assignee as the canonical owner.",
-    "If you are not that owner, append evidence or objections only. Do not change stage, decisionState, assigneeAgentId, reopenReason, or mergedIntoSubgoalId on an existing card.",
-    "If you believe a resolved or downstream card must reopen, send a targeted message to the owner or coordinator naming the subgoal and the reason. Do not reopen it yourself unless you own it or coordination explicitly asked you to do so.",
-    "Create a new topic-named subgoal only for a materially different research axis, acceptance contract, deliverable, or downstream owner. Reuse the same topicKey when the topic is unchanged.",
-    "If the board state did not materially change, prefer message-only output or shouldReply=false.",
+    "Treat the current assignee as the canonical owner for open and researching cards.",
+    "If you are not that owner, put objections, findings, and follow-up questions in the card discussion. Do not change stage, decisionState, assigneeAgentId, reopenReason, or mergedIntoSubgoalId on an existing card.",
+    "Use a targeted coordinator or owner message only when someone must act now: routing should change, a card should reopen, or a direct answer is required.",
+    "Do not jump straight from a first-pass finding to ready_for_build. Use discussion to surface the main objections, assumptions, and validation gaps first.",
+    "Only mark a research card ready_for_build when the implementation contract is explicit and the remaining uncertainty is narrow enough for implementation.",
+    "Create a new subgoal only for a materially different research axis, deliverable, acceptance contract, or downstream owner.",
+    "If the board state did not materially change, prefer discussion, message-only output, or shouldReply=false.",
     "Stay at the research and planning layer. Use the codebase as evidence, not as the main deliverable.",
     "Prefer narrow reads, small samples, and existing aggregates. Avoid broad dataset loads, full-pipeline runs, and synthetic write probes unless the current subgoal truly requires them.",
     "Send raw research to peer researchers or the coordinator. Do not target implementers or reviewers directly for research handoffs.",
@@ -200,7 +201,9 @@ function researchPromptGuidance(focus: string): string[] {
 function coordinatorPromptGuidance(): string[] {
   return [
     "Own routing and canonical card state for the build queue.",
-    "Treat the assignee on open and researching cards as the canonical research owner, and merge non-owner evidence into the canonical card instead of letting multiple researchers rewrite it directly.",
+    "Treat the assignee on open and researching cards as the canonical research owner, and use the discussion thread as the default place for non-owner debate instead of letting multiple researchers rewrite the card directly.",
+    "Treat fresh research conclusions as provisional until the discussion thread shows that objections, tradeoffs, or validation gaps were explicitly addressed. Do not rush a card downstream just because one researcher sounded confident.",
+    "If a card is marked ready_for_build without visible peer challenge or a clear discussion resolution, keep it upstream and ask for the missing discussion before routing it.",
     "Only move a card to building when decisionState is resolved and the handoff clearly states what changed, what was resolved, and what remains uncertain.",
     "When different subgoals or recipients need action, send separate teamMessages. Use multi-target only when the exact same instruction applies to the same card for every recipient.",
     "Route build work only after you set the card to building and assign the build owner. Do not target reviewers from coordination.",

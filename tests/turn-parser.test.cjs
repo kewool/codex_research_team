@@ -31,6 +31,41 @@ test("turn parser accepts multi-message payloads with per-message subgoal ids", 
   assert.deepEqual(result.subgoalUpdates[0], { id: "sg-1", expectedRevision: 4, stage: "building" });
 });
 
+test("turn parser accepts message as a legacy alias for teamMessages content", () => {
+  const result = parseAgentTurnResult(wrap(JSON.stringify({
+    shouldReply: true,
+    workingNotes: ["note"],
+    teamMessages: [
+      { targetAgentId: "coordinator_1", message: "handoff from legacy field" },
+    ],
+    completion: "continue",
+  })));
+
+  assert.deepEqual(result.teamMessages, [{
+    content: "handoff from legacy field",
+    targetAgentId: "coordinator_1",
+    targetAgentIds: ["coordinator_1"],
+  }]);
+});
+
+test("turn parser accepts owner and assignee aliases for subgoal assignees", () => {
+  const result = parseAgentTurnResult(wrap(JSON.stringify({
+    shouldReply: true,
+    subgoalUpdates: [
+      { subgoalId: "sg-1", owner: "researcher_3", stage: "researching" },
+      { subgoalId: "sg-2", ownerAgentId: "researcher_2", stage: "researching" },
+      { subgoalId: "sg-3", assignee: "implementer_1", stage: "building" },
+    ],
+    completion: "continue",
+  })));
+
+  assert.deepEqual(result.subgoalUpdates, [
+    { id: "sg-1", stage: "researching", assigneeAgentId: "researcher_3" },
+    { id: "sg-2", stage: "researching", assigneeAgentId: "researcher_2" },
+    { id: "sg-3", stage: "building", assigneeAgentId: "implementer_1" },
+  ]);
+});
+
 test("turn parser falls back to legacy teamMessage fields", () => {
   const result = parseAgentTurnResult(wrap(JSON.stringify({
     shouldReply: true,

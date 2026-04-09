@@ -62,6 +62,7 @@ interface RunState {
 export class CodexAgentProcess {
   private readonly config: AppConfig;
   private readonly agent: AgentPreset;
+  private readonly sessionId: string;
   private readonly workspacePath: string;
   private readonly language: string;
   private readonly hooks: AgentProcessHooks;
@@ -82,6 +83,7 @@ export class CodexAgentProcess {
   constructor(options: {
     config: AppConfig;
     agent: AgentPreset;
+    sessionId: string;
     workspacePath: string;
     language: string;
     files: AgentFiles;
@@ -89,6 +91,7 @@ export class CodexAgentProcess {
   }) {
     this.config = options.config;
     this.agent = options.agent;
+    this.sessionId = options.sessionId;
     this.workspacePath = options.workspacePath;
     this.language = options.language;
     this.files = options.files;
@@ -111,7 +114,7 @@ export class CodexAgentProcess {
       ...workspaceGuardrailLines(this.workspacePath),
       ...roleSpecificPromptLines(this.agent),
       ...routingGuidanceLines(this.agent, this.config.agents),
-      ...sharedTurnProtocolLines(),
+      ...sharedTurnProtocolLines({ hasSessionStateTools: this.hasSessionStateTools() }),
       "- Other agents and the operator will send more messages later in this same session.",
       "- This runtime uses a goal board with subgoals and stage transitions. Do your work through the goal board, not only through free-form team chat.",
       "- Runtime note: each turn is executed statelessly from the local transcript, so do not rely on hidden memory from prior Codex turns.",
@@ -173,10 +176,10 @@ export class CodexAgentProcess {
       ...workspaceGuardrailLines(this.workspacePath),
       ...roleSpecificPromptLines(this.agent),
       ...routingGuidanceLines(this.agent, this.config.agents),
-      ...sharedTurnProtocolLines(),
+      ...sharedTurnProtocolLines({ hasSessionStateTools: this.hasSessionStateTools() }),
       "Return exactly this shape between the XML tags:",
       "<codex_research_team-response>",
-      '{"shouldReply":true,"workingNotes":["short public note"],"teamMessages":[{"content":"research the timestamp source before implementation","targetAgentId":"coordinator_1","targetAgentIds":["coordinator_1"],"subgoalIds":["sg-2"]}],"subgoalUpdates":[{"title":"timing contract","topicKey":"timing-contract","summary":"Define the canonical timing contract before implementation.","addFacts":["Current timing source differs between export paths."],"addRelevantFiles":["src/timing.ts"],"nextAction":"settle the canonical timing source","stage":"researching","decisionState":"open","assigneeAgentId":null,"mergedIntoSubgoalId":null}],"completion":"continue"}',
+      '{"shouldReply":false,"workingNotes":[],"teamMessages":[],"subgoalUpdates":[],"completion":"continue"}',
       "</codex_research_team-response>",
       `Finish with this token on its own line: ${token}`,
     ].join("\n\n");
@@ -242,6 +245,9 @@ export class CodexAgentProcess {
         env: {
           ...process.env,
           CODEX_HOME: effectiveCodexHomeDir(this.config),
+          CRT_SERVER_URL: this.sessionServerUrl(),
+          CRT_SESSION_ID: this.sessionId,
+          CRT_AGENT_ID: this.agent.id,
           NO_COLOR: "1",
           FORCE_COLOR: "0",
         },
@@ -576,6 +582,17 @@ export class CodexAgentProcess {
 
   private quoteCmdArgument(value: string): string {
     return `"${String(value ?? "").replace(/"/g, '\\"')}"`;
+  }
+
+  private hasSessionStateTools(): boolean {
+    return this.config.defaults.codexHomeMode === "project";
+  }
+
+  private sessionServerUrl(): string {
+    const host = String(this.config.defaults.serverHost ?? "").trim();
+    const port = Number(this.config.defaults.serverPort || 0) || 4280;
+    const safeHost = !host || host === "0.0.0.0" || host === "::" || host === "[::]" ? "127.0.0.1" : host;
+    return `http://${safeHost}:${port}`;
   }
 
   private async terminateProcessTree(currentProcess: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<void> {

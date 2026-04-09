@@ -5,7 +5,8 @@ const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 
-const { loadCodexUsageStatus } = require("../dist/server/runtime/model-catalog.js");
+const { loadCodexMcpCatalog, loadCodexUsageStatus } = require("../dist/server/runtime/model-catalog.js");
+const { INTERNAL_SESSION_MCP_SERVER_NAME } = require("../dist/server/runtime/codex-home.js");
 
 test("loadCodexUsageStatus invalidates stale quota data after an auth fingerprint change", async (t) => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-usage-status-"));
@@ -54,4 +55,25 @@ test("loadCodexUsageStatus invalidates stale quota data after an auth fingerprin
   assert.equal(second.staleReason, "auth_changed");
   assert.equal(second.primary, null);
   assert.equal(second.secondary, null);
+});
+
+test("loadCodexMcpCatalog hides the internal session-state MCP server from selectable MCP settings", async (t) => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "crt-mcp-catalog-"));
+  t.after(async () => {
+    await fsp.rm(homeDir, { recursive: true, force: true });
+  });
+
+  fs.writeFileSync(path.join(homeDir, "config.toml"), [
+    `[mcp_servers.${INTERNAL_SESSION_MCP_SERVER_NAME}]`,
+    'command = "node"',
+    'args = ["dist/cli.js", "mcp-session"]',
+    "",
+    "[mcp_servers.custom]",
+    'url = "https://example.test/mcp"',
+    "",
+  ].join("\n"), "utf8");
+
+  const catalog = loadCodexMcpCatalog(homeDir);
+  assert.ok(catalog.servers.includes("custom"));
+  assert.ok(!catalog.servers.includes(INTERNAL_SESSION_MCP_SERVER_NAME));
 });
