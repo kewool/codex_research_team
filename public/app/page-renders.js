@@ -1,5 +1,5 @@
 export function createPageRenderers(deps) {
-    const { state, escapeHtml, formatLimitReset, formatPercent, formatRemainingPercent, currentConfig, currentCodexAuthStatus, currentCodexUsageStatus, activeSessions, modelOptions, reasoningEffortOptions, mcpOptions, modelCatalogSummary, mcpCatalogSummary, selectedWorkspace, renderLabel, renderHint, renderChannelSelect, renderChannelCheckboxPicker, renderAgentCheckboxPicker, renderOptionCheckboxPicker, renderStageCheckboxPicker, renderModelSelect, renderReasoningEffortSelect, configuredChannelList, } = deps;
+    const { state, escapeHtml, formatLimitReset, formatPercent, formatRemainingPercent, currentConfig, currentCodexAuthStatus, currentCodexUsageStatus, activeSessions, modelOptions, reasoningEffortOptions, mcpOptions, modelCatalogSummary, mcpCatalogSummary, selectedWorkspace, renderLabel, renderHint, renderChannelSelect, renderChannelCheckboxPicker, renderAgentCheckboxPicker, renderOptionCheckboxPicker, renderStageCheckboxPicker, renderModelSelect, renderReasoningEffortSelect, configuredChannelList, visibleDashboardSessions, dashboardSessionsMeta, } = deps;
     function renderUsageMetricCard(label, window, status) {
         const available = Boolean(status?.available && window);
         const value = available ? formatRemainingPercent(window?.usedPercent) : "--";
@@ -45,6 +45,8 @@ export function createPageRenderers(deps) {
     function renderDashboardPage() {
         const config = state.snapshot?.config;
         const sessions = state.snapshot?.sessions || [];
+        const visibleSessions = visibleDashboardSessions();
+        const visibleMeta = dashboardSessionsMeta();
         const usageStatus = currentCodexUsageStatus();
         const workspaceOptions = (config?.workspaces || [])
             .map((workspace) => `<option value="${escapeHtml(workspace.name)}" ${config.defaults.defaultWorkspaceName === workspace.name ? "selected" : ""}>${escapeHtml(workspace.name)}</option>`)
@@ -98,8 +100,17 @@ export function createPageRenderers(deps) {
         <div class="section-head">
           <h3>Sessions</h3>
         </div>
-        <div class="session-grid">
-          ${sessions.length === 0 ? `<p class="muted">No sessions yet.</p>` : sessions.map(renderDashboardSessionCard).join("")}
+        <div class="dashboard-session-scroll" data-session-list-kind="dashboard">
+          <div class="session-grid">
+            ${sessions.length === 0 ? `<p class="muted">No sessions yet.</p>` : visibleSessions.map(renderDashboardSessionCard).join("")}
+          </div>
+          ${sessions.length === 0 ? "" : `
+            <div class="history-footer recent-sessions-footer">
+              ${escapeHtml(visibleMeta.hasMore
+            ? `Showing ${visibleMeta.shownCount} of ${visibleMeta.totalCount} sessions. Scroll to load more.`
+            : `Showing all ${visibleMeta.totalCount} sessions.`)}
+            </div>
+          `}
         </div>
       </section>
     `;

@@ -130,16 +130,51 @@ test("renderSessionPage shows discussion threads on subgoal cards", () => {
   const html = renderers.renderSessionPage();
 
   assert.match(html, /discussion 1/);
-  assert.match(html, /Discussion/);
-  assert.match(html, /Conflict History/);
+  assert.match(html, /Discussion 1/);
+  assert.match(html, /Conflicts 1/);
   assert.match(html, /owner unassigned/);
+  assert.match(html, /Facts/);
+  assert.match(html, /No facts yet\./);
+  assert.match(html, /Open/);
+  assert.match(html, /No open questions yet\./);
+  assert.match(html, /Acceptance/);
+  assert.match(html, /No acceptance criteria yet\./);
+  assert.match(html, /Files/);
+  assert.match(html, /No relevant files yet\./);
+  assert.doesNotMatch(html, /Need to verify the archive mismatch/);
+});
+
+test("renderSessionPage shows discussion modal content when opened", () => {
+  const renderers = createRendererHarness({
+    sessionUi: {
+      "session-1": {
+        subgoalModal: {
+          subgoalId: "sg-1",
+          kind: "discussion",
+        },
+      },
+    },
+  });
+
+  const html = renderers.renderSessionPage();
+
+  assert.match(html, /Discussion/);
   assert.match(html, /researcher_2/);
   assert.match(html, /Need to verify the archive mismatch/);
   assert.match(html, /archive\/replay_manifest\.json/);
 });
 
-test("renderSessionPage shows an empty discussion section when a subgoal has no discussion yet", () => {
-  const renderers = createRendererHarness();
+test("renderSessionPage shows empty discussion state in the modal when no discussion exists", () => {
+  const renderers = createRendererHarness({
+    sessionUi: {
+      "session-1": {
+        subgoalModal: {
+          subgoalId: "sg-2",
+          kind: "discussion",
+        },
+      },
+    },
+  });
 
   const html = renderers.renderSessionPage();
 

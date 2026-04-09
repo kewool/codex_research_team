@@ -146,6 +146,34 @@ export function createSessionActionTools(deps) {
                 state.sessionUi[sessionId].mergedTopicsOpen = details.open;
             });
         });
+        document.querySelectorAll("[data-open-subgoal-modal]").forEach((button) => {
+            button.onclick = () => {
+                if (!state.sessionUi[session.id]) {
+                    state.sessionUi[session.id] = {};
+                }
+                state.sessionUi[session.id].subgoalModal = {
+                    subgoalId: button.dataset.openSubgoalModal || null,
+                    kind: button.dataset.modalKind || "discussion",
+                };
+                render();
+            };
+        });
+        document.querySelectorAll("[data-close-subgoal-modal]").forEach((element) => {
+            element.onclick = (event) => {
+                if (event.target !== element && element.dataset.subgoalModalCard !== "1") {
+                    return;
+                }
+                if (!state.sessionUi[session.id]) {
+                    state.sessionUi[session.id] = {};
+                }
+                state.sessionUi[session.id].subgoalModal = null;
+                render();
+            };
+        });
+        const subgoalModalCard = document.querySelector("[data-subgoal-modal-card]");
+        if (subgoalModalCard) {
+            subgoalModalCard.onclick = (event) => event.stopPropagation();
+        }
         const feedList = document.querySelector("[data-feed-list]");
         if (feedList && feedList.dataset.historyBound !== "1") {
             feedList.dataset.historyBound = "1";

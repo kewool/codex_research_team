@@ -197,6 +197,34 @@ export function createSessionActionTools(deps: SessionActionDeps) {
         state.sessionUi[sessionId].mergedTopicsOpen = details.open;
       });
     });
+    document.querySelectorAll<HTMLElement>("[data-open-subgoal-modal]").forEach((button) => {
+      button.onclick = () => {
+        if (!state.sessionUi[session.id]) {
+          state.sessionUi[session.id] = {};
+        }
+        state.sessionUi[session.id].subgoalModal = {
+          subgoalId: button.dataset.openSubgoalModal || null,
+          kind: button.dataset.modalKind || "discussion",
+        };
+        render();
+      };
+    });
+    document.querySelectorAll<HTMLElement>("[data-close-subgoal-modal]").forEach((element) => {
+      element.onclick = (event) => {
+        if (event.target !== element && element.dataset.subgoalModalCard !== "1") {
+          return;
+        }
+        if (!state.sessionUi[session.id]) {
+          state.sessionUi[session.id] = {};
+        }
+        state.sessionUi[session.id].subgoalModal = null;
+        render();
+      };
+    });
+    const subgoalModalCard = document.querySelector<HTMLElement>("[data-subgoal-modal-card]");
+    if (subgoalModalCard) {
+      subgoalModalCard.onclick = (event) => event.stopPropagation();
+    }
 
     const feedList = document.querySelector<HTMLElement>("[data-feed-list]");
     if (feedList && feedList.dataset.historyBound !== "1") {

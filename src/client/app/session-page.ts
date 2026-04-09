@@ -145,40 +145,38 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
     if (activeSubgoals.length === 0 && mergedSubgoals.length === 0) {
       return `<p class="muted">No subgoals yet.</p>`;
     }
-    const renderMemoryList = (label: string, items: unknown[] | null | undefined): string => {
+    const renderMemoryList = (label: string, items: unknown[] | null | undefined, emptyText: string): string => {
       const values = Array.isArray(items) ? items.map((item) => String(item ?? "").trim()).filter(Boolean) : [];
-      if (values.length === 0) {
-        return "";
-      }
-      return `<div class="subgoal-memory-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(values.join(" | "))}</span></div>`;
+      return `<div class="subgoal-memory-row"><strong>${escapeHtml(label)}</strong><span class="${values.length === 0 ? "muted" : ""}">${escapeHtml(values.length === 0 ? emptyText : values.join(" | "))}</span></div>`;
     };
     const renderConflictHistory = (entries: unknown[] | null | undefined): string => {
       const history = Array.isArray(entries)
         ? entries.filter((entry) => entry && typeof entry === "object").map((entry) => entry as AnyObject)
         : [];
-      if (history.length === 0) {
-        return "";
-      }
       return `
         <div class="subgoal-evidence-block">
           <div class="subgoal-memory-row">
             <strong>Conflict History</strong>
             <span>${escapeHtml(String(history.length))} recorded</span>
           </div>
-          <div class="subgoal-evidence-list">
-            ${[...history].reverse().map((entry) => `
-              <article class="subgoal-evidence-entry conflict-history-entry">
-                <header>
-                  <strong>${escapeHtml(String(entry.reason || "conflict"))}</strong>
-                  ${entry.timestamp ? `<small>${escapeHtml(String(entry.timestamp))}</small>` : ""}
-                </header>
-                <div class="subgoal-evidence-field"><strong>By</strong><span>${escapeHtml(String(entry.agentId || "unknown"))}</span></div>
-                ${entry.summary ? `<div class="subgoal-evidence-field"><strong>Summary</strong><span>${escapeHtml(String(entry.summary))}</span></div>` : ""}
-                <div class="subgoal-evidence-field"><strong>Revision</strong><span>${escapeHtml(`${String(entry.expectedRevision || 0)} -> ${String(entry.currentRevision || 0)}`)}</span></div>
-                <div class="subgoal-evidence-field"><strong>Stage</strong><span>${escapeHtml(`${String(entry.requestedStage || "-")} -> ${String(entry.currentStage || "-")}`)}</span></div>
-              </article>
-            `).join("")}
-          </div>
+          ${history.length === 0
+            ? `<div class="history-footer muted">No conflict history yet.</div>`
+            : `
+              <div class="subgoal-evidence-list">
+                ${[...history].reverse().map((entry) => `
+                  <article class="subgoal-evidence-entry conflict-history-entry">
+                    <header>
+                      <strong>${escapeHtml(String(entry.reason || "conflict"))}</strong>
+                      ${entry.timestamp ? `<small>${escapeHtml(String(entry.timestamp))}</small>` : ""}
+                    </header>
+                    <div class="subgoal-evidence-field"><strong>By</strong><span>${escapeHtml(String(entry.agentId || "unknown"))}</span></div>
+                    ${entry.summary ? `<div class="subgoal-evidence-field"><strong>Summary</strong><span>${escapeHtml(String(entry.summary))}</span></div>` : ""}
+                    <div class="subgoal-evidence-field"><strong>Revision</strong><span>${escapeHtml(`${String(entry.expectedRevision || 0)} -> ${String(entry.currentRevision || 0)}`)}</span></div>
+                    <div class="subgoal-evidence-field"><strong>Stage</strong><span>${escapeHtml(`${String(entry.requestedStage || "-")} -> ${String(entry.currentStage || "-")}`)}</span></div>
+                  </article>
+                `).join("")}
+              </div>
+            `}
         </div>
       `;
     };
@@ -219,9 +217,38 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
         </div>
       `;
     };
+    const renderSubgoalModal = (): string => {
+      const modalState = state.sessionUi?.[session.id]?.subgoalModal;
+      if (!modalState || !modalState.subgoalId || !modalState.kind) {
+        return "";
+      }
+      const subgoal = subgoalById.get(String(modalState.subgoalId));
+      if (!subgoal) {
+        return "";
+      }
+      const title = modalState.kind === "discussion" ? "Discussion" : "Conflict History";
+      const body = modalState.kind === "discussion"
+        ? renderDiscussionEntries(subgoal.discussionMessages)
+        : renderConflictHistory(subgoal.conflictHistory);
+      return `
+        <div class="modal-backdrop" data-close-subgoal-modal="1">
+          <section class="modal-card subgoal-modal-card" data-subgoal-modal-card="1" role="dialog" aria-modal="true" aria-labelledby="subgoal-modal-title">
+            <div class="section-head tight">
+              <div>
+                <p class="eyebrow">${escapeHtml(String(subgoal.id || ""))}</p>
+                <h3 id="subgoal-modal-title">${escapeHtml(title)} - ${escapeHtml(String(subgoal.title || "Untitled subgoal"))}</h3>
+              </div>
+              <button class="ghost tiny" data-close-subgoal-modal="1">Close</button>
+            </div>
+            ${body}
+          </section>
+        </div>
+      `;
+    };
     const renderSubgoalCard = (subgoal: AnyObject, archived = false): string => {
       const mergedTarget = subgoal.mergedIntoSubgoalId ? subgoalById.get(String(subgoal.mergedIntoSubgoalId)) : null;
       const discussionCount = Array.isArray(subgoal.discussionMessages) ? subgoal.discussionMessages.length : 0;
+      const conflictHistoryCount = Array.isArray(subgoal.conflictHistory) ? subgoal.conflictHistory.length : 0;
       return `
         <article class="subgoal-card ${subgoal.activeConflict ? "conflict" : ""} ${archived ? "archived" : ""}" data-stage="${escapeHtml(String(subgoal.stage || "").toLowerCase())}">
           <header>
@@ -239,14 +266,16 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
           </header>
           <p>${escapeHtml(subgoal.summary || "-")}</p>
           <div class="subgoal-memory" data-scroll-key="${escapeHtml(`subgoal-memory:${session.id}:${String(subgoal.id || "")}`)}" data-scroll-mode="append">
-            ${renderMemoryList("Facts", subgoal.facts)}
-            ${renderMemoryList("Open", subgoal.openQuestions)}
-            ${renderMemoryList("Resolved", subgoal.resolvedDecisions)}
-            ${renderMemoryList("Acceptance", subgoal.acceptanceCriteria)}
-            ${renderMemoryList("Files", subgoal.relevantFiles)}
-            ${subgoal.nextAction ? `<div class="subgoal-memory-row"><strong>Next</strong><span>${escapeHtml(String(subgoal.nextAction || ""))}</span></div>` : ""}
-            ${renderDiscussionEntries(subgoal.discussionMessages)}
-            ${renderConflictHistory(subgoal.conflictHistory)}
+            ${renderMemoryList("Facts", subgoal.facts, "No facts yet.")}
+            ${renderMemoryList("Open", subgoal.openQuestions, "No open questions yet.")}
+            ${renderMemoryList("Resolved", subgoal.resolvedDecisions, "No resolved decisions yet.")}
+            ${renderMemoryList("Acceptance", subgoal.acceptanceCriteria, "No acceptance criteria yet.")}
+            ${renderMemoryList("Files", subgoal.relevantFiles, "No relevant files yet.")}
+            <div class="subgoal-memory-row"><strong>Next</strong><span class="${subgoal.nextAction ? "" : "muted"}">${escapeHtml(String(subgoal.nextAction || "No next action yet."))}</span></div>
+          </div>
+          <div class="inline-actions subgoal-detail-actions">
+            <button class="ghost tiny" data-open-subgoal-modal="${escapeHtml(String(subgoal.id || ""))}" data-modal-kind="discussion">Discussion ${escapeHtml(String(discussionCount))}</button>
+            <button class="ghost tiny" data-open-subgoal-modal="${escapeHtml(String(subgoal.id || ""))}" data-modal-kind="conflict">Conflicts ${escapeHtml(String(conflictHistoryCount))}</button>
           </div>
           ${subgoal.activeConflict && subgoal.lastConflictSummary ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastConflictSummary)}</small>` : ""}
           ${subgoal.lastReopenReason ? `<small class="subgoal-conflict-text">${escapeHtml(subgoal.lastReopenReason)}</small>` : ""}
@@ -269,6 +298,7 @@ export function createSessionPageRenderers(deps: SessionPageDeps) {
           </div>
         </details>
       ` : ""}
+      ${renderSubgoalModal()}
     `;
   }
 

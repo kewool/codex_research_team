@@ -285,10 +285,13 @@ label {
 }
 
 .rail {
+  display: flex;
+  flex-direction: column;
   position: sticky;
   top: 1rem;
   align-self: start;
-  min-height: calc(100vh - 2rem);
+  height: calc(100vh - 2rem);
+  max-height: calc(100vh - 2rem);
   padding: 1rem;
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: var(--radius-lg);
@@ -297,6 +300,7 @@ label {
     linear-gradient(180deg, var(--surface-dark) 0%, var(--surface-dark-2) 100%);
   color: #edf2f7;
   box-shadow: 0 22px 46px rgba(8, 12, 16, 0.2);
+  overflow: hidden;
 }
 
 .rail-brand {
@@ -353,6 +357,15 @@ label {
   gap: 0.82rem;
 }
 
+.recent-session-stack {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0.16rem;
+  align-content: start;
+}
+
 .rail-nav {
   margin-bottom: 1.2rem;
 }
@@ -360,6 +373,13 @@ label {
 .rail-section {
   display: grid;
   gap: 0.8rem;
+}
+
+.sessions-section {
+  grid-template-rows: auto minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .nav-item,
@@ -510,6 +530,16 @@ label {
 .agent-detail-grid {
   display: grid;
   gap: 1rem;
+}
+
+.dashboard-session-scroll {
+  max-height: min(70vh, 860px);
+  overflow-y: auto;
+  padding-right: 0.22rem;
+}
+
+.recent-sessions-footer {
+  padding-top: 0.14rem;
 }
 
 .summary-row {
@@ -1212,6 +1242,17 @@ label {
   font-size: 0.82rem;
   color: var(--text);
   overflow-wrap: anywhere;
+}
+
+.subgoal-detail-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.subgoal-modal-card {
+  width: min(860px, calc(100vw - 32px));
+  max-height: min(80vh, 920px);
+  overflow: auto;
 }
 
 .subgoal-conflict-text {

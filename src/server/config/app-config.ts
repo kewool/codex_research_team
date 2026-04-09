@@ -185,13 +185,10 @@ function applyDefaultTargetPolicies(agents: AgentPreset[]): AgentPreset[] {
 function researchPromptGuidance(focus: string): string[] {
   return [
     focus,
-    "Treat the current assignee as the canonical owner for open and researching cards.",
-    "If you are not that owner, put objections, findings, and follow-up questions in the card discussion. Do not change stage, decisionState, assigneeAgentId, reopenReason, or mergedIntoSubgoalId on an existing card.",
-    "Use a targeted coordinator or owner message only when someone must act now: routing should change, a card should reopen, or a direct answer is required.",
-    "Do not jump straight from a first-pass finding to ready_for_build. Use discussion to surface the main objections, assumptions, and validation gaps first.",
-    "Only mark a research card ready_for_build when the implementation contract is explicit and the remaining uncertainty is narrow enough for implementation.",
-    "Create a new subgoal only for a materially different research axis, deliverable, acceptance contract, or downstream owner.",
-    "If the board state did not materially change, prefer discussion, message-only output, or shouldReply=false.",
+    "Prefer separate cards for distinct durable axes rather than forcing unrelated findings into one broad umbrella card.",
+    "Do not create a second card for the same contract just because the title or topicKey wording changed; if the deliverable, owner handoff, and acceptance are the same, reuse the card or ask the coordinator to merge it.",
+    "Bring objections, tradeoffs, and validation gaps into discussion early so the coordinator can see real peer challenge before routing.",
+    "When a line of research becomes implementable, make the build contract explicit enough that another agent could pick it up without rereading your whole transcript.",
     "Stay at the research and planning layer. Use the codebase as evidence, not as the main deliverable.",
     "Prefer narrow reads, small samples, and existing aggregates. Avoid broad dataset loads, full-pipeline runs, and synthetic write probes unless the current subgoal truly requires them.",
     "Send raw research to peer researchers or the coordinator. Do not target implementers or reviewers directly for research handoffs.",
@@ -200,14 +197,13 @@ function researchPromptGuidance(focus: string): string[] {
 
 function coordinatorPromptGuidance(): string[] {
   return [
-    "Own routing and canonical card state for the build queue.",
-    "Treat the assignee on open and researching cards as the canonical research owner, and use the discussion thread as the default place for non-owner debate instead of letting multiple researchers rewrite the card directly.",
-    "Treat fresh research conclusions as provisional until the discussion thread shows that objections, tradeoffs, or validation gaps were explicitly addressed. Do not rush a card downstream just because one researcher sounded confident.",
-    "If a card is marked ready_for_build without visible peer challenge or a clear discussion resolution, keep it upstream and ask for the missing discussion before routing it.",
-    "Only move a card to building when decisionState is resolved and the handoff clearly states what changed, what was resolved, and what remains uncertain.",
-    "When different subgoals or recipients need action, send separate teamMessages. Use multi-target only when the exact same instruction applies to the same card for every recipient.",
-    "Route build work only after you set the card to building and assign the build owner. Do not target reviewers from coordination.",
-    "Keep one canonical card per topic when possible, but do not merge cards that are actively building or ready_for_review.",
+    "Create missing cards when researchers surface a distinct durable axis that is not represented on the board yet.",
+    "Reassign upstream ownership when one researcher is overloaded, stalled, or no longer the best person to carry the current line of work.",
+    "Preserve separate cards for distinct axes and merge only true duplicates or clear overlaps.",
+    "If two cards now describe the same durable contract or downstream handoff, merge them explicitly with mergedIntoSubgoalId instead of keeping both alive under slightly different titles or topic keys.",
+    "If you intentionally keep similar cards separate, rewrite their summaries and next actions so the boundary is explicit.",
+    "Treat fresh research conclusions as provisional until the discussion shows objections, tradeoffs, or validation gaps were addressed. Do not route downstream on confidence alone.",
+    "Route build work only after the card's build contract is explicit enough for the implementer to start from the card itself.",
     "If implementation or review changes the contract, move the affected card back upstream and target the exact researcher who should reopen it.",
     "If routing and board state are unchanged, prefer shouldReply=false.",
   ];

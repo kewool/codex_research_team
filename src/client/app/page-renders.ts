@@ -26,6 +26,8 @@ export function createPageRenderers(deps: {
   renderModelSelect: (attributes: string, options: string[], selected: string | null, emptyLabel: string) => string;
   renderReasoningEffortSelect: (attributes: string, options: string[], selected: string | null, emptyLabel: string) => string;
   configuredChannelList: (config: AnyObject) => string[];
+  visibleDashboardSessions: () => AnyObject[];
+  dashboardSessionsMeta: () => { shownCount: number; totalCount: number; hasMore: boolean };
 }) {
   const {
     state,
@@ -53,6 +55,8 @@ export function createPageRenderers(deps: {
     renderModelSelect,
     renderReasoningEffortSelect,
     configuredChannelList,
+    visibleDashboardSessions,
+    dashboardSessionsMeta,
   } = deps;
 
   function renderUsageMetricCard(label: string, window: AnyObject | null | undefined, status: AnyObject | null): string {
@@ -102,6 +106,8 @@ export function createPageRenderers(deps: {
   function renderDashboardPage(): string {
     const config = state.snapshot?.config;
     const sessions = (state.snapshot?.sessions as AnyObject[]) || [];
+    const visibleSessions = visibleDashboardSessions();
+    const visibleMeta = dashboardSessionsMeta();
     const usageStatus = currentCodexUsageStatus();
     const workspaceOptions = (config?.workspaces || [])
       .map((workspace: AnyObject) => `<option value="${escapeHtml(workspace.name)}" ${config.defaults.defaultWorkspaceName === workspace.name ? "selected" : ""}>${escapeHtml(workspace.name)}</option>`)
@@ -155,8 +161,19 @@ export function createPageRenderers(deps: {
         <div class="section-head">
           <h3>Sessions</h3>
         </div>
-        <div class="session-grid">
-          ${sessions.length === 0 ? `<p class="muted">No sessions yet.</p>` : sessions.map(renderDashboardSessionCard).join("")}
+        <div class="dashboard-session-scroll" data-session-list-kind="dashboard">
+          <div class="session-grid">
+            ${sessions.length === 0 ? `<p class="muted">No sessions yet.</p>` : visibleSessions.map(renderDashboardSessionCard).join("")}
+          </div>
+          ${sessions.length === 0 ? "" : `
+            <div class="history-footer recent-sessions-footer">
+              ${escapeHtml(
+                visibleMeta.hasMore
+                  ? `Showing ${visibleMeta.shownCount} of ${visibleMeta.totalCount} sessions. Scroll to load more.`
+                  : `Showing all ${visibleMeta.totalCount} sessions.`
+              )}
+            </div>
+          `}
         </div>
       </section>
     `;

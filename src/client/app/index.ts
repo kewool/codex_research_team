@@ -11,8 +11,9 @@ import { createConfigControlTools } from "./config-controls";
 import { createPageActionTools } from "./page-actions";
 import { createPageRenderers } from "./page-renders";
 import { createScrollTools } from "./scroll";
+import { createSessionListTools } from "./session-lists";
 import { createSessionCacheTools } from "./session-cache";
-import { createSessionActionTools } from "./session-actions";
+import { createSessionActionTools, shouldTriggerBottomLoad } from "./session-actions";
 import { createSessionPageRenderers } from "./session-page";
 
 type AnyObject = Record<string, any>;
@@ -33,6 +34,18 @@ const state = {
     windowY: 0,
     anchors: {} as Record<string, any>,
   },
+  sessionLists: {
+    rail: {
+      visibleCount: 16,
+      bottomLoadLocked: false,
+      scrollTop: 0,
+    },
+    dashboard: {
+      visibleCount: 24,
+      bottomLoadLocked: false,
+      scrollTop: 0,
+    },
+  },
   workspaceCreateModal: {
     open: false,
     value: "",
@@ -50,6 +63,14 @@ const {
   saveElementScrollAnchor,
   syncSessionScrollMemoryFromDom,
 } = createScrollTools(state);
+const {
+  loadMoreSessions,
+  restoreSessionListScrolls,
+  sessionListState,
+  sessionsMeta,
+  updateSessionListScroll,
+  visibleSessions,
+} = createSessionListTools({ state });
 
 function scheduleRender(): void {
   if (renderQueued) {
@@ -505,6 +526,8 @@ const {
   renderModelSelect,
   renderReasoningEffortSelect,
   configuredChannelList,
+  visibleDashboardSessions: () => visibleSessions("dashboard"),
+  dashboardSessionsMeta: () => sessionsMeta("dashboard"),
 });
 function bindSessionStream(): void {
   state.stream?.close();
@@ -594,9 +617,15 @@ async function refreshState(): Promise<void> {
 
 function render(): void {
   const scrollSnapshot = captureRenderScrollSnapshot();
+  const listScrollSnapshot = {
+    rail: state.sessionLists.rail.scrollTop,
+    dashboard: state.sessionLists.dashboard.scrollTop,
+  };
   const root = qs<HTMLDivElement>("#app");
   const snapshot = state.snapshot;
   const sessions = ((snapshot?.sessions as AnyObject[]) || []);
+  const railSessions = visibleSessions("rail");
+  const railSessionsMeta = sessionsMeta("rail");
 
   root.innerHTML = `
     <div class="app-shell route-${state.route.name}">
@@ -613,13 +642,22 @@ function render(): void {
           <button class="nav-item ${state.route.name === "workspaces" ? "active" : ""}" data-nav="/workspaces">Workspaces</button>
           <button class="nav-item ${state.route.name === "settings" ? "active" : ""}" data-nav="/settings">Settings</button>
         </nav>
-        <section class="rail-section">
+        <section class="rail-section sessions-section">
           <div class="section-head">
             <h2>Recent Sessions</h2>
             <button id="refresh-state" class="ghost tiny">Refresh</button>
           </div>
-          <div class="session-stack">
-            ${sessions.length === 0 ? `<p class="muted">No sessions yet.</p>` : sessions.map(renderRailSessionCard).join("")}
+          <div class="session-stack recent-session-stack" data-session-list-kind="rail">
+            ${sessions.length === 0 ? `<p class="muted">No sessions yet.</p>` : railSessions.map(renderRailSessionCard).join("")}
+            ${sessions.length === 0 ? "" : `
+              <div class="history-footer recent-sessions-footer">
+                ${escapeHtml(
+                  railSessionsMeta.hasMore
+                    ? `Showing ${railSessionsMeta.shownCount} of ${railSessionsMeta.totalCount}. Scroll for more.`
+                    : `Showing all ${railSessionsMeta.totalCount} sessions.`
+                )}
+              </div>
+            `}
           </div>
         </section>
       </aside>
@@ -647,6 +685,9 @@ function render(): void {
   wireChromeActions();
   wirePageActions();
   bindSessionScrollMemory();
+  state.sessionLists.rail.scrollTop = listScrollSnapshot.rail;
+  state.sessionLists.dashboard.scrollTop = listScrollSnapshot.dashboard;
+  restoreSessionListScrolls();
   if (scrollSnapshot) {
     restoreRenderScrollSnapshot(scrollSnapshot);
     requestAnimationFrame(() => restoreRenderScrollSnapshot(scrollSnapshot));
@@ -897,6 +938,21 @@ function wireChromeActions(): void {
   if (refresh) {
     refresh.onclick = () => void withGuard(refreshState());
   }
+  document.querySelectorAll<HTMLElement>("[data-session-list-kind]").forEach((element) => {
+    if (element.dataset.sessionListBound === "1") {
+      return;
+    }
+    element.dataset.sessionListBound = "1";
+    element.addEventListener("scroll", () => {
+      const kind = element.dataset.sessionListKind === "dashboard" ? "dashboard" : "rail";
+      updateSessionListScroll(kind, element.scrollTop);
+      const listState = sessionListState(kind);
+      listState.hasMore = sessionsMeta(kind).hasMore;
+      if (shouldTriggerBottomLoad(listState, element) && loadMoreSessions(kind)) {
+        render();
+      }
+    }, { passive: true });
+  });
   const topDashboard = document.querySelector<HTMLButtonElement>("#top-dashboard");
   if (topDashboard) {
     topDashboard.onclick = () => navigate("/");
@@ -934,9 +990,5 @@ window.addEventListener("scroll", () => {
 window.addEventListener("DOMContentLoaded", () => {
   void withGuard(refreshState());
 });
-
-
-
-
 
 

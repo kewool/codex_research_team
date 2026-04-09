@@ -45,6 +45,19 @@ test("default config creates workspace and normalizes defaults", async (t) => {
     ],
   );
 
+  const researcherGuidance = config.agents.find((agent) => agent.id === "researcher_1").policy.promptGuidance.join("\n");
+  assert.match(researcherGuidance, /Prefer separate cards for distinct durable axes/i);
+  assert.match(researcherGuidance, /Do not create a second card for the same contract/i);
+  assert.match(researcherGuidance, /Bring objections, tradeoffs, and validation gaps into discussion early/i);
+  assert.match(researcherGuidance, /make the build contract explicit enough that another agent could pick it up/i);
+
+  const coordinatorGuidance = config.agents.find((agent) => agent.id === "coordinator_1").policy.promptGuidance.join("\n");
+  assert.match(coordinatorGuidance, /Create missing cards when researchers surface a distinct durable axis/i);
+  assert.match(coordinatorGuidance, /Reassign upstream ownership when one researcher is overloaded/i);
+  assert.match(coordinatorGuidance, /Preserve separate cards for distinct axes and merge only true duplicates/i);
+  assert.match(coordinatorGuidance, /merge them explicitly with mergedIntoSubgoalId/i);
+  assert.match(coordinatorGuidance, /rewrite their summaries and next actions so the boundary is explicit/i);
+
   const normalized = normalizeDefaults({
     codexHomeMode: "project",
     codexAuthMode: "separate",
